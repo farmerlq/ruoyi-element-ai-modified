@@ -1,0 +1,172 @@
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from fastapi import HTTPException, status, Depends
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+from core.config import settings
+from core.database import get_db
+from models.user import User
+import logging
+
+# 配置日志
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# 密码加密上下文
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# JWT配置
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+
+# OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    验证明文密码与哈希密码是否匹配
+    """
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """
+    对密码进行哈希处理
+    """
+    return pwd_context.hash(password)
+
+def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
+    """
+    验证用户凭据
+    """
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        return None
+    if not verify_password(password, user.password_hash):
+        return None
+    return user
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """
+    创建访问令牌
+    """
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> User:
+    """
+    获取当前用户
+    """
+    logger.debug(f"Token received: {token}")
+    
+    # 如果认证功能未启用，则跳过认证
+    if not settings.ENABLE_AUTH:
+        # 返回一个默认用户或根据需要处理
+        logger.debug("Auth disabled, returning None")
+        return None
+    
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        logger.debug(f"Decoded payload: {payload}")
+        username: str = payload.get("sub")
+        if username is None:
+            logger.debug("Username is None in payload")
+            raise credentials_exception
+    except JWTError as e:
+        logger.debug(f"JWTError: {e}")
+        raise credentials_exception
+    except Exception as e:
+        logger.debug(f"Unexpected error: {e}")
+        raise credentials_exception
+        
+    user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        logger.debug("User not found in database")
+        raise credentials_exception
+    logger.debug(f"User found: {user.username}")
+    return user
+
+def get_current_user_or_none(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """
+    获取当前用户，如果未认证则返回None
+    """
+    if not settings.ENABLE_AUTH:
+        return None
+    
+    try:
+        user = get_current_user(token, db)
+        return user
+    except HTTPException:
+        return None
+    except Exception:
+        return None
+
+def get_current_merchant_id(
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme)
+) -> Optional[int]:
+    """
+    从令牌中获取当前商户ID
+    """
+    if not settings.ENABLE_AUTH:
+        return None
+    
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        merchant_id: int = payload.get("merchant_id")
+        if merchant_id is None:
+            # 如果令牌中没有商户ID，尝试从用户信息中获取
+            username: str = payload.get("sub")
+            if username is not None:
+                user = db.query(User).filter(User.username == username).first()
+                if user is not None:
+                    return user.merchant_id
+            raise credentials_exception
+        return merchant_id
+    except JWTError:
+        raise credentials_exception
+    except Exception:
+        raise credentials_exception
+
+def get_token_payload(
+    token: str = Depends(oauth2_scheme)
+) -> Optional[Dict[str, Any]]:
+    """
+    获取令牌中的所有载荷信息
+    """
+    if not settings.ENABLE_AUTH:
+        return None
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload
+    except JWTError:
+        return None
+    except Exception:
+        return None
