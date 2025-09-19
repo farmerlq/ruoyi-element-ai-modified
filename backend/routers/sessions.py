@@ -67,7 +67,8 @@ def read_conversations(
     if merchant_id:
         query = query.filter(Conversation.merchant_id == merchant_id)
         
-    conversations = query.offset(skip).limit(limit).all()
+    # 按更新时间降序排序
+    conversations = query.order_by(Conversation.updated_at.desc()).offset(skip).limit(limit).all()
     
     # 为每个会话查询消息条数
     for conversation in conversations:

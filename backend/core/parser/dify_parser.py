@@ -60,7 +60,7 @@ class DifyParser:
         """
         return ChatResponse(
             message=data.get("answer", ""),
-            conversation_id=None,  # blocking模式下没有conversation_id
+            conversation_id=data.get("conversation_id"),  # 使用API返回的conversation_id
             message_id=data.get("message_id"),
             metadata={
                 "mode": data.get("mode"),
@@ -118,7 +118,7 @@ class DifyParser:
                         # LLM 返回文本块事件
                         yield ChatResponse(
                             message=data.get("answer", ""),
-                            conversation_id=None,
+                            conversation_id=data.get("conversation_id"),
                             message_id=data.get("message_id"),
                             metadata={
                                 "event": event,
@@ -133,7 +133,7 @@ class DifyParser:
                         # 消息结束事件，表示文本流式返回结束
                         yield ChatResponse(
                             message="",
-                            conversation_id=None,
+                            conversation_id=data.get("conversation_id"),
                             message_id=data.get("message_id"),
                             metadata={
                                 "event": event,
@@ -150,7 +150,7 @@ class DifyParser:
                         # 内容是Mp3格式的音频块，使用 base64 编码后的字符串
                         yield ChatResponse(
                             message="",
-                            conversation_id=None,
+                            conversation_id=data.get("conversation_id"),
                             message_id=data.get("message_id"),
                             metadata={
                                 "event": event,
@@ -165,7 +165,7 @@ class DifyParser:
                         # TTS 音频流结束事件，收到这个事件表示音频流返回结束
                         yield ChatResponse(
                             message="",
-                            conversation_id=None,
+                            conversation_id=data.get("conversation_id"),
                             message_id=data.get("message_id"),
                             metadata={
                                 "event": event,
@@ -181,7 +181,7 @@ class DifyParser:
                         # 开启内容审查和审查输出内容时，若命中了审查条件，则会通过此事件替换消息内容为预设回复
                         yield ChatResponse(
                             message=data.get("answer", ""),
-                            conversation_id=None,
+                            conversation_id=data.get("conversation_id"),
                             message_id=data.get("message_id"),
                             metadata={
                                 "event": event,
@@ -196,7 +196,7 @@ class DifyParser:
                         # 收到异常事件后即结束
                         yield ChatResponse(
                             message="",
-                            conversation_id=None,
+                            conversation_id=data.get("conversation_id"),
                             message_id=data.get("message_id"),
                             metadata={
                                 "event": event,

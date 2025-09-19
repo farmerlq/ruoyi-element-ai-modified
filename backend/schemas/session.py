@@ -19,7 +19,8 @@ class ConversationCreate(BaseModel):
     status: str
     ended_at: Optional[datetime] = None
 
-class ConversationUpdate(ConversationBase):
+class ConversationUpdate(BaseModel):
+    id: str
     merchant_id: Optional[int] = None
     user_id: Optional[int] = None
     agent_id: Optional[int] = None

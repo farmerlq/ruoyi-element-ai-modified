@@ -12,6 +12,7 @@ class MessageBase(BaseModel):
     content: str
     message_metadata: Optional[Dict[str, Any]] = None
     cost: Optional[float] = 0.0
+    total_tokens: Optional[int] = 0
     workflow_events: Optional[List[Dict[str, Any]]] = None
 
     @field_validator('cost', mode='before')
@@ -33,6 +34,7 @@ class MessageUpdate(MessageBase):
     content: Optional[str] = None
     message_metadata: Optional[Dict[str, Any]] = None
     cost: Optional[float] = None
+    total_tokens: Optional[int] = None
     workflow_events: Optional[List[Dict[str, Any]]] = None
 
 class MessageInDBBase(MessageBase):

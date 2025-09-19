@@ -6,6 +6,7 @@ from models.session import Conversation
 from models.message import Message
 import asyncio
 import uuid
+import re
 
 class ChatService:
     """聊天服务类"""
@@ -42,19 +43,31 @@ class ChatService:
                 # 我们需要收集所有流式响应并合并它们
                 full_message = ""
                 metadata_list = []
+                conversation_id = None
+                message_id = None
                 
                 async for response in adapter.chat_stream(request):
                     full_message += response.message
                     if response.metadata:
                         metadata_list.append(response.metadata)
+                    # 保存消息ID
+                    # 会话ID应该始终使用请求中的会话ID，不需要从响应中收集
+                    if response.message_id:
+                        message_id = response.message_id
                 
-                # 返回合并后的响应
-                return ChatResponse(
+                # 创建最终的响应对象
+                # 会话ID应该始终使用请求中的会话ID
+                final_response = ChatResponse(
                     message=full_message,
-                    conversation_id=None,
-                    message_id=None,
+                    conversation_id=request.conversation_id,
+                    message_id=message_id,
                     metadata={"stream_responses": metadata_list}
                 )
+                
+                # 保存对话和消息到数据库
+                self._save_conversation_and_message(request, final_response, agent)
+                
+                return final_response
             else:
                 # 执行普通聊天
                 response = await adapter.chat(request)
@@ -97,43 +110,58 @@ class ChatService:
         try:
             # 执行流式聊天
             async for response in adapter.chat_stream(request):
-                yield response
-                
                 # 收集消息内容
                 if response.message:
                     full_message += response.message
                 
-                # 收集工作流事件
+                # 收集工作流事件 - 只收集真正的工作流相关事件
                 if response.metadata and "event" in response.metadata:
-                    workflow_events.append(response.metadata)
+                    event_type = response.metadata.get("event")
+                    # 只收集工作流相关事件，排除text_chunk和message事件
+                    if event_type and ("workflow" in event_type or "node" in event_type):
+                        workflow_events.append(response.metadata)
                 
-                # 保存对话ID和消息ID
-                if response.conversation_id:
-                    conversation_id = response.conversation_id
-                if response.message_id:
+                # 保存消息ID（优先保留第一个非None的值）
+                # 会话ID应该始终使用请求中的会话ID，不需要从响应中收集
+                if response.message_id and message_id is None:
                     message_id = response.message_id
+                
+                # 实时yield每个响应事件
+                yield response
         finally:
             # 关闭适配器连接（如果有的话）
             if hasattr(adapter, 'close'):
                 await adapter.close()
             
-            # 在所有流式响应完成后，保存完整的消息到数据库
+            # 在所有流式响应完成后，只保存最终的完整消息到数据库
+            # 不创建额外的ChatResponse，避免重复
             if full_message or workflow_events:
-                # 创建最终的ChatResponse
+                # 直接保存收集到的数据到数据库
                 final_response = ChatResponse(
                     message=full_message,
-                    conversation_id=conversation_id,
+                    conversation_id=request.conversation_id,
                     message_id=message_id,
                     metadata={"workflow_events": workflow_events} if workflow_events else None
                 )
                 # 保存对话和消息到数据库
                 self._save_conversation_and_message(request, final_response, agent)
+            else:
+                # 即使没有消息内容，也应该保存用户消息
+                final_response = ChatResponse(
+                    message="",
+                    conversation_id=request.conversation_id,
+                    message_id=message_id,
+                    metadata=None
+                )
+                self._save_conversation_and_message(request, final_response, agent)
     
     def _save_conversation_and_message(self, request: ChatRequest, response: ChatResponse, agent):
         """保存对话和消息到数据库"""
         try:
-            # 生成对话ID（如果不存在）
-            conversation_id = response.conversation_id or str(uuid.uuid4())
+            # 生成对话ID（如果有会话ID，强制使用传参的会话ID；如果没有会话ID就可以有解析出来的会话ID；如果都没有的话就新建会话ID）
+            conversation_id = request.conversation_id
+            if not conversation_id:
+                conversation_id = response.conversation_id or str(uuid.uuid4())
             
             # 保存或更新对话
             conversation = self.db.query(Conversation).filter(
@@ -146,56 +174,84 @@ class ChatService:
                     merchant_id=request.merchant_id,
                     user_id=request.user_id,
                     agent_id=request.agent_id,
-                    title=request.query[:100],  # 使用前100个字符作为标题
+                    title=request.get_query_text()[:100],  # 使用前100个字符作为标题
                     status="active"
                 )
                 self.db.add(conversation)
                 self.db.commit()
                 self.db.refresh(conversation)
-            elif request.conversation_id != conversation_id:
+            elif request.conversation_id and request.conversation_id != conversation_id:
                 # 更新对话的更新时间
                 conversation.updated_at = None  # 让数据库自动更新
                 self.db.commit()
         
             # 保存用户消息
+            user_query = request.get_query_text() or ""
+            
             user_message = Message(
                 conversation_id=conversation_id,
                 merchant_id=request.merchant_id,
                 user_id=request.user_id,
                 agent_id=request.agent_id,
                 role="user",
-                content=request.query
+                content=user_query
             )
             self.db.add(user_message)
             
-            # 保存AI回复消息
-            if response.message or (response.metadata and "workflow_events" in response.metadata):
-                # 提取workflow_events（如果有的话）
-                workflow_events = []
-                metadata_for_storage = response.metadata
-                
-                # 处理workflow_events
-                if response.metadata and "workflow_events" in response.metadata:
-                    workflow_events = response.metadata["workflow_events"]
-                    # 从message_metadata中移除workflow_events数据，避免重复存储
-                    metadata_for_storage = None
-                elif response.metadata and "event" in response.metadata:
-                    # 如果是单个工作流事件，保存到workflow_events字段
+            # 保存AI回复消息（总是保存，即使内容为空）
+            # 提取workflow_events（如果有的话）
+            workflow_events = []
+            metadata_for_storage = response.metadata
+            
+            # 处理workflow_events
+            if response.metadata and "workflow_events" in response.metadata:
+                workflow_events = response.metadata["workflow_events"]
+                # 从message_metadata中移除workflow_events数据，避免重复存储
+                metadata_for_storage = None
+            elif response.metadata and "event" in response.metadata:
+                # 如果是单个工作流事件，保存到workflow_events字段
+                event_type = response.metadata.get("event")
+                # 只保存真正的工作流相关事件，排除text_chunk和message事件
+                if event_type and ("workflow" in event_type or "node" in event_type):
                     workflow_events = [response.metadata]
                     # 从message_metadata中移除工作流事件数据，避免重复存储
                     metadata_for_storage = None
-                
-                ai_message = Message(
-                    conversation_id=conversation_id,
-                    merchant_id=request.merchant_id,
-                    user_id=request.user_id,
-                    agent_id=request.agent_id,
-                    role="agent",
-                    content=response.message or "",  # 确保content不为None
-                    message_metadata=metadata_for_storage,
-                    workflow_events=workflow_events
-                )
-                self.db.add(ai_message)
+            
+            # 提取总token数 - 优先使用估算的token数
+            total_tokens = 0
+            
+            # 首先检查响应中是否有估算的token数
+            if response.total_tokens_estimated:
+                total_tokens = response.total_tokens_estimated
+            else:
+                # 如果没有估算的token数，从workflow_events中查找token信息
+                for event in workflow_events:
+                    if event.get("event") == "message_end" and event.get("usage"):
+                        usage_info = event.get("usage")
+                        total_tokens = usage_info.get("total_tokens", 0)
+                        break
+                    elif event.get("event") == "workflow_finished" and event.get("total_tokens"):
+                        total_tokens = event.get("total_tokens", 0)
+                        break
+            
+            # 计算费用（按照每百万token 12元的价格）
+            cost = 0.0
+            if total_tokens > 0:
+                cost = (total_tokens / 1000000) * 12
+            
+            ai_message = Message(
+                conversation_id=conversation_id,
+                merchant_id=request.merchant_id,
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                role="agent",
+                content=response.message or "",  # 确保content不为None
+                message_metadata=metadata_for_storage,
+                workflow_events=workflow_events,
+                cost=cost,
+                total_tokens=total_tokens
+            )
+            self.db.add(ai_message)
             
             self.db.commit()
         except Exception as e:

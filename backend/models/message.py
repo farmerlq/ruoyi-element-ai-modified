@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Enum, DECIMAL
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Enum, Float
 from sqlalchemy.dialects.mysql import JSON
 from core.database import Base
 from datetime import datetime
@@ -14,6 +14,7 @@ class Message(Base):
     role = Column(Enum("user", "agent"), nullable=False)
     content = Column(Text, nullable=False)
     message_metadata = Column(JSON)
-    cost = Column(DECIMAL(18, 6), default=0.000000, nullable=False)
+    cost = Column(Float, default=0.0, comment="消息费用")
+    total_tokens = Column(Integer, default=0, comment="总token数")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     workflow_events = Column(JSON)

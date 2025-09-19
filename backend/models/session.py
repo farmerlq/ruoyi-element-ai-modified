@@ -12,5 +12,5 @@ class Conversation(Base):
     title = Column(String(200), nullable=False)
     status = Column(Enum("active", "ended"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     ended_at = Column(DateTime)

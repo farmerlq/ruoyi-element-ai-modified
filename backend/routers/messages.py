@@ -2,9 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 import logging
+from datetime import datetime
 from core.database import get_db
 from core.deps import get_optional_current_user
 from models.message import Message as DBMessage
+from models.session import Conversation
 from schemas.message import MessageCreate, MessageUpdate, Message as MessageSchema
 
 # 配置日志
@@ -22,6 +24,13 @@ def create_message(
         logger.debug(f"Creating message: {message}")
         db_message = DBMessage(**message.dict())
         db.add(db_message)
+        
+        # 更新会话的更新时间
+        if message.conversation_id:
+            conversation = db.query(Conversation).filter(Conversation.id == message.conversation_id).first()
+            if conversation:
+                conversation.updated_at = datetime.utcnow()
+        
         db.commit()
         db.refresh(db_message)
         logger.debug(f"Message created successfully: {db_message.id}")
