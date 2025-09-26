@@ -1,0 +1,538 @@
+<!-- Aside 侧边栏 -->
+<script setup lang="ts">
+// 由于找不到 'vue-element-plus-x/types/Conversations' 模块，需要确认模块路径是否正确。
+// ConversationItem 类型实际上定义在项目本地的 types 目录下
+import type { ConversationItem } from '../../../../types/Conversations';
+import { Conversations } from 'vue-element-plus-x';
+import { computed, ref, onMounted, watch, nextTick } from 'vue';
+import { ElMessageBox, ElMessage } from 'element-plus';
+import { Plus, Delete } from '@element-plus/icons-vue';
+import { useRoute, useRouter } from 'vue-router';
+import { get_session } from '@/api';
+import logo from '@/assets/images/logo.png';
+import SvgIcon from '@/components/SvgIcon/index.vue';
+import Avatar from '@/layouts/components/Header/components/Avatar.vue';
+import Collapse from '@/layouts/components/Header/components/Collapse.vue';
+import { useDesignStore } from '@/stores';
+import { useSessionStore } from '@/stores/modules/session';
+import { useUserStore } from '@/stores/modules/user';
+
+const route = useRoute();
+const router = useRouter();
+const designStore = useDesignStore();
+const sessionStore = useSessionStore();
+const userStore = useUserStore();
+
+const sessionId = computed(() => route.params?.id);
+const conversationsList = computed(() => sessionStore.sessionList);
+const loadMoreLoading = computed(() => sessionStore.isLoadingMore);
+const active = ref<string | undefined>();
+
+onMounted(async () => {
+  // 获取会话列表
+  await sessionStore.requestSessionList();
+  // 高亮最新会话
+  if (conversationsList.value.length > 0 && sessionId.value) {
+    const currentSessionRes = await get_session(`${sessionId.value}`);
+    // 通过 ID 查询详情，设置当前会话 (因为有分页)
+    sessionStore.setCurrentSession(currentSessionRes.data);
+  }
+});
+
+watch(
+  () => sessionStore.currentSession,
+  (newValue) => {
+    active.value = newValue ? `${newValue.id}` : undefined;
+  },
+);
+
+// 创建会话
+function handleCreatChat() {
+  // 创建会话, 跳转到默认聊天
+  sessionStore.createSessionBtn();
+}
+
+// Clear all conversations
+async function handleClearAllChats() {
+  ElMessageBox.confirm(
+    '确定要删除所有对话记录吗？此操作不可恢复。',
+    '确认删除',
+    {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger',
+    }
+  ).then(async () => {
+    await sessionStore.clearAllSessions();
+    // Also clear current session if it exists
+    sessionStore.setCurrentSession(null);
+    // Navigate to default chat page
+    router.replace({ name: 'chat' });
+  }).catch(() => {
+    // Cancelled
+  });
+}
+
+// Clear all messages
+async function handleClearAllMessages() {
+  ElMessageBox.confirm(
+    '确定要删除所有消息记录吗？此操作不可恢复。',
+    '确认删除',
+    {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger',
+    }
+  ).then(async () => {
+    await sessionStore.clearAllMessages();
+  }).catch(() => {
+    // Cancelled
+  });
+}
+
+// 切换会话
+function handleChange(item: ConversationItem) {
+  if (!item.id) {
+    return;
+  }
+  sessionStore.setCurrentSession(item);
+  router.replace({
+    name: 'chatWithId',
+    params: {
+      id: item.id,
+    },
+  });
+}
+
+// 处理组件触发的加载更多事件
+async function handleLoadMore() {
+  if (!sessionStore.hasMore)
+    return; // 无更多数据时不加载
+  await sessionStore.loadMoreSessions();
+}
+
+// 右键菜单
+function handleMenuCommand(command: any, item: ConversationItem) {
+  switch (command) {
+    case 'delete':
+      ElMessageBox.confirm('删除后，聊天记录将不可恢复。', '确定删除对话？', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+        cancelButtonClass: 'el-button--info',
+        roundButton: true,
+        autofocus: false,
+      })
+        .then(() => {
+          // 删除会话
+          sessionStore.deleteSessions([item.id!]);
+          nextTick(() => {
+            if (item.id === active.value) {
+              // 如果删除当前会话 返回到默认页
+              sessionStore.createSessionBtn();
+            }
+          });
+        })
+        .catch(() => {
+          // 取消删除
+        });
+      break;
+    case 'rename':
+      ElMessageBox.prompt('', '编辑对话名称', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        inputErrorMessage: '请输入对话名称',
+        confirmButtonClass: 'el-button--primary',
+        cancelButtonClass: 'el-button--info',
+        roundButton: true,
+        inputValue: item.title, // 设置默认值
+        autofocus: false,
+        inputValidator: (value) => {
+          if (!value) {
+            return false;
+          }
+          return true;
+        },
+      }).then(({ value }) => {
+        sessionStore
+          .updateSession({
+            id: item.id!,
+            title: value,
+            // 移除不存在的 sessionContent 属性，因类型 “ConversationItem” 上不存在该属性
+            // sessionContent: item.sessionContent,
+          })
+          .then(() => {
+            ElMessage({
+              type: 'success',
+              message: '修改成功',
+            });
+            nextTick(() => {
+              // 如果是当前会话，则更新当前选中会话信息
+              if (sessionStore.currentSession?.id === item.id) {
+                sessionStore.setCurrentSession({
+                  ...item,
+                  title: value,
+                });
+              }
+            });
+          });
+      });
+      break;
+    default:
+      break;
+  }
+}
+</script>
+
+<template>
+  <div
+    class="aside-container"
+    :class="{
+      'aside-container-suspended': designStore.isSafeAreaHover,
+      'aside-container-collapse': designStore.isCollapse,
+      // 折叠且未激活悬停时添加 no-delay 类
+      'no-delay': designStore.isCollapse && !designStore.hasActivatedHover,
+    }"
+  >
+    <div class="aside-wrapper">
+      <div v-if="!designStore.isCollapse" class="aside-header">
+        <div class="flex items-center gap-8px hover:cursor-pointer" @click="handleCreatChat">
+          <el-image :src="logo" alt="logo" fit="cover" class="logo-img" />
+          <span class="logo-text max-w-150px text-overflow">Element Plus X</span>
+        </div>
+        <Collapse class="ml-auto" />
+      </div>
+
+      <div class="aside-body">
+        <div class="creat-chat-btn-wrapper">
+          <div class="creat-chat-btn" @click="handleCreatChat">
+            <el-icon class="add-icon">
+              <Plus />
+            </el-icon>
+            <span class="creat-chat-text">新对话</span>
+            <SvgIcon name="ctrl+k" size="37" />
+          </div>
+          
+          <!-- Add clear all button -->
+          <div 
+            v-if="conversationsList.length > 0"
+            class="clear-all-btn" 
+            @click="handleClearAllChats"
+          >
+            <el-icon class="clear-icon">
+              <Delete />
+            </el-icon>
+            <span class="clear-all-text">清空所有对话</span>
+          </div>
+          
+          <!-- Add clear all messages button -->
+          <div 
+            class="clear-all-btn clear-messages-btn" 
+            @click="handleClearAllMessages"
+          >
+            <el-icon class="clear-icon">
+              <Delete />
+            </el-icon>
+            <span class="clear-all-text">清空所有消息</span>
+          </div>
+        </div>
+
+        <div class="aside-content">
+          <div v-if="conversationsList.length > 0" class="conversations-wrap overflow-hidden">
+            <Conversations
+              v-model:active="active"
+              :items="conversationsList"
+              :label-max-width="200"
+              :show-tooltip="true"
+              :tooltip-offset="60"
+              show-built-in-menu
+              groupable
+              row-key="id"
+              label-key="title"
+              tooltip-placement="right"
+              :load-more="handleLoadMore"
+              :load-more-loading="loadMoreLoading"
+              :items-style="{
+                marginLeft: '8px',
+                userSelect: 'none',
+                borderRadius: '10px',
+                padding: '8px 12px',
+              }"
+              :items-active-style="{
+                backgroundColor: '#fff',
+                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
+                color: 'rgba(0, 0, 0, 0.85)',
+              }"
+              :items-hover-style="{
+                backgroundColor: 'rgba(0, 0, 0, 0.04)',
+              }"
+              @menu-command="handleMenuCommand"
+              @change="handleChange"
+            />
+          </div>
+
+          <el-empty v-else class="h-full flex-center" description="暂无对话记录" />
+        </div>
+      </div>
+
+      <!-- 侧边栏底部 - 用户账户信息 -->
+      <div class="aside-footer">
+        <div class="user-account">
+          <div v-if="userStore.token" class="user-info">
+            <Avatar />
+          </div>
+          <div v-else class="login-prompt">
+            <el-button type="primary" @click="userStore.openLoginDialog()">
+              登录账号
+            </el-button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped lang="scss">
+
+// 基础样式
+.aside-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 11;
+  width: var(--sidebar-default-width);
+  height: 100%;
+  pointer-events: auto;
+  background-color: var(--sidebar-background-color);
+  border-right: 0.5px solid var(--s-color-border-tertiary, rgb(0 0 0 / 8%));
+  .aside-wrapper {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+
+    // 侧边栏头部样式
+    .aside-header {
+      display: flex;
+      align-items: center;
+      height: 36px;
+      margin: 10px 12px 0;
+      .logo-img {
+        box-sizing: border-box;
+        width: 36px;
+        height: 36px;
+        padding: 4px;
+        overflow: hidden;
+        background-color: #ffffff;
+        border-radius: 50%;
+        img {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+          height: 100%;
+        }
+      }
+      .logo-text {
+        font-size: 16px;
+        font-weight: 700;
+        color: rgb(0 0 0 / 85%);
+        transform: skewX(-2deg);
+      }
+    }
+
+    // 侧边栏内容样式
+    .aside-body {
+      .creat-chat-btn-wrapper {
+        padding: 0 12px;
+        .creat-chat-btn {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+          padding: 8px 6px;
+          margin-top: 16px;
+          margin-bottom: 6px;
+          color: #0057ff;
+          cursor: pointer;
+          user-select: none;
+          background-color: rgb(0 87 255 / 6%);
+          border: 1px solid rgb(0 102 255 / 15%);
+          border-radius: 12px;
+          &:hover {
+            background-color: rgb(0 87 255 / 12%);
+          }
+          .creat-chat-text {
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 22px;
+          }
+          .add-icon {
+            width: 24px;
+            height: 24px;
+            font-size: 16px;
+          }
+          .svg-icon {
+            height: 24px;
+            margin-left: auto;
+            color: rgb(0 87 255 / 30%);
+          }
+        }
+        
+        // Add styles for clear all button
+        .clear-all-btn {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+          padding: 8px 6px;
+          margin-top: 6px;
+          margin-bottom: 16px;
+          color: #f56c6c;
+          cursor: pointer;
+          user-select: none;
+          background-color: rgb(245 108 108 / 6%);
+          border: 1px solid rgb(245 108 108 / 15%);
+          border-radius: 12px;
+          &:hover {
+            background-color: rgb(245 108 108 / 12%);
+          }
+          .clear-all-text {
+            font-size: 14px;
+            font-weight: 700;
+            line-height: 22px;
+          }
+          .clear-icon {
+            width: 24px;
+            height: 24px;
+            font-size: 16px;
+          }
+        }
+        
+        // Specific styles for clear messages button
+        .clear-messages-btn {
+          color: #e6a23c;
+          background-color: rgb(230 162 60 / 6%);
+          border: 1px solid rgb(230 162 60 / 15%);
+          &:hover {
+            background-color: rgb(230 162 60 / 12%);
+          }
+        }
+      }
+      .aside-content {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
+
+        // 会话列表高度-基础样式
+        .conversations-wrap {
+          height: calc(100vh - 180px); /* 为底部用户账户信息留出空间 */
+          .label {
+            display: flex;
+            align-items: center;
+            height: 100%;
+          }
+        }
+      }
+    }
+
+    // 侧边栏底部样式 - 用户账户信息
+    .aside-footer {
+      position: relative;
+      z-index: 10; // 设置z-index确保在菜单之上
+      padding: 12px;
+      margin-top: auto; // 推到容器底部
+      background-color: var(--sidebar-background-color);
+      border-top: 1px solid var(--s-color-border-tertiary, rgb(0 0 0 / 8%));
+      .user-account {
+        .user-info {
+          :deep(.avatar-container) {
+            display: flex;
+            align-items: center;
+            .el-avatar {
+              flex-shrink: 0;
+            }
+          }
+        }
+        .login-prompt {
+          display: flex;
+          justify-content: center;
+          padding: 8px 0;
+          .el-button {
+            width: 100%;
+          }
+        }
+      }
+    }
+  }
+}
+
+// 折叠样式
+.aside-container-collapse {
+  position: absolute;
+  top: 54px;
+  z-index: 22;
+  height: auto;
+  max-height: calc(100% - 110px);
+  padding-bottom: 12px;
+  overflow: hidden;
+
+  /* 禁用悬停事件 */
+  pointer-events: none;
+  border: 1px solid rgb(0 0 0 / 8%);
+  border-radius: 15px;
+  box-shadow:
+    0 10px 20px 0 rgb(0 0 0 / 10%),
+    0 0 1px 0 rgb(0 0 0 / 15%);
+  opacity: 0;
+
+  // 指定样式过渡
+  transition: opacity 0.3s ease 0.3s, transform 0.3s ease 0.3s;
+
+  /* 新增：未激活悬停时覆盖延迟 */
+  &.no-delay {
+    transition-delay: 0s, 0s;
+  }
+}
+
+// 悬停样式
+.aside-container-collapse:hover,
+.aside-container-collapse.aside-container-suspended {
+  height: auto;
+  max-height: calc(100% - 110px);
+  padding-bottom: 12px;
+  overflow: hidden;
+  pointer-events: auto;
+  border: 1px solid rgb(0 0 0 / 8%);
+  border-radius: 15px;
+  box-shadow:
+    0 10px 20px 0 rgb(0 0 0 / 10%),
+    0 0 1px 0 rgb(0 0 0 / 15%);
+
+  // 直接在这里写悬停时的样式（与 aside-container-suspended 一致）
+  opacity: 1;
+
+  // 过渡动画沿用原有设置
+  transition: opacity 0.3s ease 0s, transform 0.3s ease 0s;
+
+  // 会话列表高度-悬停样式（为底部用户账户信息留出空间）
+  .conversations-wrap {
+    height: calc(100vh - 225px) !important;
+  }
+}
+
+// 样式穿透
+:deep(.conversations-list) {
+  // 会话列表背景色
+  background-color: transparent !important;
+}
+
+// 群组标题样式 和 侧边栏菜单背景色一致
+:deep(.conversation-group-title) {
+  padding-left: 12px !important;
+  background-color: var(--sidebar-background-color) !important;
+}
+
+</style>
