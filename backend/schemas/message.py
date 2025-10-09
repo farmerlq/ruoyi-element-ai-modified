@@ -13,6 +13,7 @@ class MessageBase(BaseModel):
     message_metadata: Optional[Dict[str, Any]] = None
     cost: Optional[float] = 0.0
     total_tokens: Optional[int] = 0
+    total_tokens_estimated: Optional[int] = 0
     workflow_events: Optional[List[Dict[str, Any]]] = None
 
     @field_validator('cost', mode='before')
@@ -25,7 +26,7 @@ class MessageBase(BaseModel):
 class MessageCreate(MessageBase):
     pass
 
-class MessageUpdate(MessageBase):
+class MessageUpdate(BaseModel):
     conversation_id: Optional[str] = None
     merchant_id: Optional[int] = None
     user_id: Optional[int] = None
@@ -35,7 +36,11 @@ class MessageUpdate(MessageBase):
     message_metadata: Optional[Dict[str, Any]] = None
     cost: Optional[float] = None
     total_tokens: Optional[int] = None
+    total_tokens_estimated: Optional[int] = None
     workflow_events: Optional[List[Dict[str, Any]]] = None
+    
+    class Config:
+        extra = "forbid"
 
 class MessageInDBBase(MessageBase):
     id: int

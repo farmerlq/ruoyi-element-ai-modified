@@ -1,0 +1,473 @@
+import httpx
+import json
+import logging
+import os
+from typing import AsyncGenerator, Dict, Any, Optional
+from httpx import HTTPStatusError, RequestError
+from .base import ChatRequest, ChatResponse
+
+logger = logging.getLogger(__name__)
+
+
+class DifyResponseParser:
+    """Dify响应解析器 - 统一处理流式和非流式响应"""
+    
+    @staticmethod
+    def parse_blocking_response(response_data: Dict[str, Any], is_workflow: bool) -> ChatResponse:
+        """解析非流式响应"""
+        if is_workflow:
+            # 工作流响应处理 - 根据Dify官方API文档结构
+            # 工作流响应结构有两种可能：
+            # 1. 直接包含状态字段: {"workflow_run_id", "task_id", "status", "outputs", "error", "elapsed_time", "total_tokens", "total_steps", "created_at", "finished_at"}
+            # 2. 嵌套在data字段中: {"task_id", "workflow_run_id", "data": {"status", "outputs", "error", "elapsed_time", "total_tokens", "total_steps", "created_at", "finished_at"}}
+            
+            # 检查是否是嵌套结构
+            if "data" in response_data and isinstance(response_data["data"], dict):
+                # 嵌套结构：从data字段提取实际数据
+                data = response_data["data"]
+                outputs = data.get("outputs", {})
+                workflow_run_id = response_data.get("workflow_run_id")
+                task_id = response_data.get("task_id")
+            else:
+                # 直接结构
+                data = response_data
+                outputs = response_data.get("outputs", {})
+                workflow_run_id = response_data.get("workflow_run_id")
+                task_id = response_data.get("task_id")
+            
+            # 从outputs字段提取消息内容
+            message = ""
+            if isinstance(outputs, dict):
+                # 优先从outputs.text提取消息
+                message = outputs.get("text", "")
+                # 如果没有text字段，尝试output字段（Dify工作流常用）
+                if not message:
+                    message = outputs.get("output", "")
+                # 如果还没有，尝试其他可能的文本字段
+                if not message:
+                    for key, value in outputs.items():
+                        if isinstance(value, str) and value.strip():
+                            message = value
+                            break
+                        elif isinstance(value, dict):
+                            # 检查嵌套字典中的文本字段
+                            nested_text = value.get("text", "")
+                            if nested_text:
+                                message = nested_text
+                                break
+            
+            total_tokens = data.get("total_tokens", 0)
+            return ChatResponse(
+                message=message,
+                conversation_id=response_data.get("conversation_id"),
+                message_id=task_id,
+                metadata={
+                    "workflow_run_id": workflow_run_id,
+                    "task_id": task_id,
+                    "status": data.get("status"),
+                    "elapsed_time": data.get("elapsed_time"),
+                    "total_tokens": total_tokens,
+                    "total_steps": data.get("total_steps"),
+                    "created_at": data.get("created_at"),
+                    "finished_at": data.get("finished_at"),
+                    "error": data.get("error")
+                },
+                total_tokens_estimated=total_tokens  # 将实际token数赋值给估算字段
+            )
+        else:
+            # 聊天接口响应处理
+            usage = response_data.get("usage", {})
+            total_tokens = usage.get("total_tokens", 0)
+            return ChatResponse(
+                message=response_data.get("answer", ""),
+                conversation_id=response_data.get("conversation_id"),
+                message_id=response_data.get("message_id"),
+                metadata={
+                    "task_id": response_data.get("task_id"),
+                    "conversation_id": response_data.get("conversation_id"),
+                    "metadata": response_data.get("metadata"),
+                    "usage": usage,
+                    "retriever_resources": response_data.get("retriever_resources")
+                },
+                total_tokens_estimated=total_tokens  # 将实际token数赋值给估算字段
+            )
+    
+    @staticmethod
+    def parse_streaming_event(data: Dict[str, Any], event: str, is_workflow: bool, request: ChatRequest) -> Optional[ChatResponse]:
+        """解析流式事件
+        
+        注意：workflow和chat-messages端点的事件流结构基本一致，
+        主要区别在于字符流事件名称不同：
+        - workflow端点使用 text_chunk 事件
+        - chat-messages端点使用 message 事件
+        其他事件（workflow_started, node_started, node_finished, workflow_finished, 
+        message_end, tts_message, tts_message_end, message_replace, error, ping）
+        的处理逻辑基本一致，可以统一处理。
+        """
+        
+        # 统一处理字符流事件
+        if event == "text_chunk" or event == "message":
+            # 处理字符流事件
+            if event == "text_chunk":
+                # workflow端点的text_chunk事件
+                chunk_data = data.get("data", {})
+                text = chunk_data.get("text", "")
+                task_id = data.get("task_id")
+                workflow_run_id = data.get("workflow_run_id")
+                from_variable_selector = chunk_data.get("from_variable_selector")
+                # workflow事件没有这些字段
+                message_id = None
+                created_at = None
+                id_value = None
+            else:
+                # chat-messages端点的message事件
+                text = data.get("answer", "")
+                task_id = data.get("task_id")
+                message_id = data.get("message_id")
+                created_at = data.get("created_at")
+                id_value = data.get("id")
+                workflow_run_id = None
+                from_variable_selector = None
+            
+            return ChatResponse(
+                message=text,
+                conversation_id=request.conversation_id,
+                message_id=task_id or message_id or "",
+                metadata={
+                    "event": "text_chunk",
+                    "workflow_run_id": workflow_run_id,
+                    "task_id": task_id,
+                    "from_variable_selector": from_variable_selector,
+                    "id": id_value,
+                    "created_at": created_at
+                }
+            )
+        
+        # 统一处理工作流相关事件
+        elif event == "workflow_finished":
+            # 工作流完成，发送最终响应
+            workflow_data = data.get("data", {})
+            outputs = workflow_data.get("outputs", {})
+            message = ""
+            if isinstance(outputs, dict):
+                message = outputs.get("text", "")
+                # 如果没有text字段，尝试其他可能的文本字段
+                if not message:
+                    for key, value in outputs.items():
+                        if isinstance(value, str):
+                            message = value
+                            break
+            
+            return ChatResponse(
+                message=message,
+                conversation_id=request.conversation_id,
+                message_id=data.get("task_id"),
+                metadata={
+                    "event": event,
+                    "status": workflow_data.get("status"),
+                    "elapsed_time": workflow_data.get("elapsed_time"),
+                    "total_tokens": workflow_data.get("total_tokens"),
+                    "total_steps": workflow_data.get("total_steps"),
+                    "finished_at": workflow_data.get("finished_at"),
+                    "error": workflow_data.get("error")
+                }
+            )
+        
+        elif event == "workflow_started":
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("task_id"),
+                metadata={
+                    "event": event,
+                    "workflow_run_id": data.get("workflow_run_id"),
+                    "task_id": data.get("task_id"),
+                    "workflow_data": data.get("data")
+                }
+            )
+        
+        elif event == "node_started":
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("task_id"),
+                metadata={
+                    "event": event,
+                    "workflow_run_id": data.get("workflow_run_id"),
+                    "task_id": data.get("task_id"),
+                    "node_data": data.get("data")
+                }
+            )
+        
+        elif event == "node_finished":
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("task_id"),
+                metadata={
+                    "event": event,
+                    "workflow_run_id": data.get("workflow_run_id"),
+                    "task_id": data.get("task_id"),
+                    "node_data": data.get("data")
+                }
+            )
+        
+        # 统一处理消息相关事件
+        elif event == "message_end":
+            usage = data.get("usage", {})
+            total_tokens = usage.get("total_tokens", 0)
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("message_id"),
+                metadata={
+                    "event": event,
+                    "task_id": data.get("task_id"),
+                    "metadata": data.get("metadata"),
+                    "usage": usage,
+                    "retriever_resources": data.get("retriever_resources")
+                },
+                total_tokens_estimated=total_tokens  # 将实际token数赋值给估算字段
+            )
+        
+        elif event == "tts_message":
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("message_id"),
+                metadata={
+                    "event": event,
+                    "task_id": data.get("task_id"),
+                    "audio": data.get("audio"),
+                    "created_at": data.get("created_at")
+                }
+            )
+        
+        elif event == "tts_message_end":
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("message_id"),
+                metadata={
+                    "event": event,
+                    "task_id": data.get("task_id"),
+                    "audio": data.get("audio"),
+                    "created_at": data.get("created_at")
+                }
+            )
+        
+        elif event == "message_replace":
+            return ChatResponse(
+                message=data.get("answer", ""),
+                conversation_id=request.conversation_id,
+                message_id=data.get("message_id"),
+                metadata={
+                    "event": event,
+                    "task_id": data.get("task_id"),
+                    "created_at": data.get("created_at")
+                }
+            )
+        
+        elif event == "error":
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("message_id"),
+                metadata={
+                    "event": event,
+                    "task_id": data.get("task_id"),
+                    "status": data.get("status"),
+                    "code": data.get("code"),
+                    "error_message": data.get("message")
+                }
+            )
+        
+        elif event == "ping":
+            # 心跳事件，不需要返回内容
+            return None
+        
+        # 处理workflow相关的statistics事件
+        elif event == "statistics":
+            total_tokens = data.get("total_tokens", 0)
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("task_id"),
+                metadata={
+                    "event": event,
+                    "workflow_run_id": data.get("workflow_run_id"),
+                    "task_id": data.get("task_id"),
+                    "status": data.get("status"),
+                    "elapsed_time": data.get("elapsed_time"),
+                    "total_tokens": total_tokens,
+                    "total_steps": data.get("total_steps"),
+                    "created_at": data.get("created_at"),
+                    "finished_at": data.get("finished_at"),
+                    "error": data.get("error")
+                },
+                total_tokens_estimated=total_tokens  # 将实际token数赋值给估算字段
+            )
+        
+        return None
+
+
+class DifyAdapter:
+    """Dify API适配器"""
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        # 优先使用配置中的base_url，如果没有则使用环境变量DIFY_BASE_URL，最后使用默认值
+        base_url = config.get("base_url") or os.getenv("DIFY_BASE_URL", "http://localhost/v1")
+        api_key = config.get("api_key", "")
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        self.client = httpx.AsyncClient(base_url=base_url, headers=headers, timeout=60.0)
+        self.parser = DifyResponseParser()
+
+    async def chat(self, request: ChatRequest) -> ChatResponse:
+        """发送聊天请求"""
+        try:
+            # 根据智能体配置中的type类型判断是调用工作流接口还是聊天接口
+            agent_type = self.config.get("type", "chat")  # 默认是chat类型
+            is_workflow = agent_type == "workflow"
+            
+            # 确定端点
+            endpoint = "/workflows/run" if is_workflow else "/chat-messages"
+            
+            if is_workflow:
+                # 工作流需要不同的参数结构
+                # 获取基础inputs配置
+                inputs = self.config.get("workflow_inputs", {}).copy()
+                
+                # 将查询内容添加到inputs中
+                if request.get_query_text():
+                    inputs["query"] = request.get_query_text()
+                
+                payload = {
+                    "inputs": inputs,
+                    "response_mode": "blocking",
+                    "user": request.user_id
+                }
+            else:
+                # 聊天接口参数
+                payload = {
+                    "inputs": {},
+                    "query": request.get_query_text(),
+                    "user": request.user_id,
+                    "response_mode": "blocking"
+                }
+            
+            # if request.conversation_id:
+            #     payload["conversation_id"] = request.conversation_id
+                
+            response = await self.client.post(endpoint, json=payload)
+            response.raise_for_status()
+            
+            response_data = response.json()
+            
+            # 使用统一的解析器处理响应
+            return self.parser.parse_blocking_response(response_data, is_workflow)
+                
+        except HTTPStatusError as e:
+            logger.error(
+                f"Dify API HTTP error: {e.response.status_code} {e.response.reason_phrase}"
+                f"\nURL: {e.request.url}"
+                f"\nRequest: {e.request.content.decode('utf-8') if e.request.content else 'None'}"
+                f"\nResponse: {await (await e.response.aread()).decode('utf-8') if hasattr(e.response, 'aread') else 'Cannot read streaming response'}"
+            )
+            raise
+        except RequestError as e:
+            logger.error(f"Dify API network error: {str(e)}")
+            raise
+        except json.JSONDecodeError as e:
+            logger.error(f"Dify API JSON decode error: {str(e)}")
+            raise
+
+    async def chat_stream(self, request: ChatRequest) -> AsyncGenerator[ChatResponse, None]:
+        """发送流式聊天请求"""
+        try:
+            # 根据智能体配置中的type类型判断是调用工作流接口还是聊天接口
+            agent_type = self.config.get("type", "chat")  # 默认是chat类型
+            is_workflow = agent_type == "workflow"
+            
+            # 确定端点
+            endpoint = "/workflows/run" if is_workflow else "/chat-messages"
+            
+            if is_workflow:
+                # 工作流需要不同的参数结构
+                # 获取基础inputs配置
+                inputs = self.config.get("workflow_inputs", {}).copy()
+                
+                # 将查询内容添加到inputs中
+                if request.get_query_text():
+                    inputs["query"] = request.get_query_text()
+                
+                payload = {
+                    "inputs": inputs,
+                    "response_mode": "streaming",
+                    "user": str(request.user_id)
+                }
+            else:
+                # 聊天接口参数
+                payload = {
+                    "inputs": {},
+                    "query": request.get_query_text(),
+                    "user": str(request.user_id),
+                    "response_mode": "streaming"
+                }
+            
+            # if request.conversation_id:
+            #     payload["conversation_id"] = request.conversation_id
+                
+            async with self.client.stream("POST", endpoint, json=payload) as response:
+                response.raise_for_status()
+                
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:]  # 移除 "data: " 前缀
+                        if data_str.strip() == "[DONE]":
+                            break
+                        
+                        try:
+                            data = json.loads(data_str)
+                            event = data.get("event") # 使用统一的解析器处理事件
+                            chat_response = self.parser.parse_streaming_event(data, event, is_workflow, request)
+                            if chat_response:
+                                yield chat_response
+                        
+                        except json.JSONDecodeError:
+                            continue
+        
+        except HTTPStatusError as e:
+            # 对于流式响应，如果已经关闭，不能再次读取内容
+            response_content = "Cannot read streaming response (stream closed)"
+            if hasattr(e.response, 'aread'):
+                try:
+                    response_content = await (await e.response.aread()).decode('utf-8')
+                except Exception:
+                    response_content = "Cannot read streaming response (error reading)"
+            
+            logger.error(
+                f"Dify API HTTP error in stream: {e.response.status_code} {e.response.reason_phrase}"
+                f"\nURL: {e.request.url}"
+                f"\nRequest: {e.request.content.decode('utf-8') if e.request.content else 'None'}"
+                f"\nResponse: {response_content}"
+            )
+            raise
+        except RequestError as e:
+            logger.error(f"Dify API network error in stream: {str(e)}")
+            raise
+
+    async def get_conversation_history(self, conversation_id: str) -> Dict[str, Any]:
+        """获取对话历史"""
+        response = await self.client.get(f"/messages?conversation_id={conversation_id}")
+        response.raise_for_status()
+        return response.json()
+
+    async def close(self):
+        """关闭HTTP客户端"""
+        await self.client.aclose()

@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.database import SessionLocal
 from models.message import Message
+from typing import List, Dict, Any, Union, cast
 
 def clean_workflow_events():
     """清理workflow_events中的错误事件"""
@@ -24,21 +25,25 @@ def clean_workflow_events():
         print(f"找到 {total_messages} 条包含workflow_events的消息")
         
         for message in messages:
-            if not message.workflow_events:
+            # 确保 workflow_events 是列表类型
+            workflow_events = message.workflow_events
+            if workflow_events is None or not isinstance(workflow_events, list):
                 continue
                 
-            original_count = len(message.workflow_events)
+            original_count = len(workflow_events)
             
             # 过滤掉text_chunk和message事件
-            filtered_events = []
-            for event in message.workflow_events:
-                event_type = event.get('event', '')
-                # 只保留真正的工作流相关事件
-                if event_type and ('workflow' in event_type or 'node' in event_type):
-                    filtered_events.append(event)
+            filtered_events: List[Dict[str, Any]] = []
+            for event in workflow_events:
+                if isinstance(event, dict):
+                    event_type = event.get('event', '')
+                    # 只保留真正的工作流相关事件
+                    if event_type and ('workflow' in event_type or 'node' in event_type):
+                        filtered_events.append(event)
             
             # 如果事件数量有变化，更新数据库
             if len(filtered_events) != original_count:
+                # 正确地将修改后的列表赋值给字段
                 message.workflow_events = filtered_events if filtered_events else None
                 cleaned_count += 1
                 
@@ -70,14 +75,17 @@ def preview_cleanup():
         print(f"找到 {len(messages)} 条包含workflow_events的消息")
         
         for message in messages[:5]:  # 只预览前5条
-            if message.workflow_events:
+            # 确保 workflow_events 是列表类型
+            workflow_events = message.workflow_events
+            if workflow_events is not None and isinstance(workflow_events, list) and workflow_events:
                 print(f"\n消息 ID: {message.id}")
-                print(f"事件数量: {len(message.workflow_events)}")
-                for i, event in enumerate(message.workflow_events[:3]):  # 只显示前3个事件
-                    event_type = event.get('event', '未知')
-                    print(f"  事件 {i+1}: {event_type}")
-                if len(message.workflow_events) > 3:
-                    print(f"  ... 还有 {len(message.workflow_events) - 3} 个事件")
+                print(f"事件数量: {len(workflow_events)}")
+                for i, event in enumerate(workflow_events[:3]):  # 只显示前3个事件
+                    if isinstance(event, dict):
+                        event_type = event.get('event', '未知')
+                        print(f"  事件 {i+1}: {event_type}")
+                if len(workflow_events) > 3:
+                    print(f"  ... 还有 {len(workflow_events) - 3} 个事件")
         
     finally:
         db.close()

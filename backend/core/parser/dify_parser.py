@@ -37,17 +37,19 @@ class DifyParser:
     """
     
     @staticmethod
-    def parse_blocking_response(data: Dict[str, Any]) -> ChatResponse:
+    def parse_blocking_response(data: Dict[str, Any], is_workflow: bool = False) -> ChatResponse:
         """
         解析阻塞模式下的响应数据 (ChatCompletionResponse)
         
         Args:
             data (Dict[str, Any]): Dify API返回的blocking模式响应数据
+            is_workflow (bool): 是否为工作流模式
             
         Returns:
             ChatResponse: 解析后的统一响应格式
             
         Response format:
+        普通聊天模式:
         {
             "message_id": "message_id",
             "mode": "chat",
@@ -57,18 +59,104 @@ class DifyParser:
             "retriever_resources": [],
             "created_at": 1705395332
         }
+        
+        工作流模式:
+        {
+            "data": {
+                "id": "workflow_run_id",
+                "workflow_id": "workflow_id",
+                "status": "succeeded",
+                "outputs": {
+                    "output": "回复内容"
+                },
+                "error": "",
+                "elapsed_time": 5.123,
+                "total_tokens": 100,
+                "total_steps": 3,
+                "created_at": 1705395332,
+                "finished_at": 1705395337
+            },
+            "task_id": "task_id",
+            "workflow_run_id": "workflow_run_id"
+        }
         """
+        if is_workflow:
+            # 工作流模式响应处理
+            workflow_data = data.get("data", {})
+            outputs = workflow_data.get("outputs", {})
+            
+            # 提取完整的响应结构
+            
+            # 提取回复内容
+            message = ""
+            if isinstance(outputs, dict):
+                # 尝试从outputs中提取文本内容
+                message = outputs.get("output", "")
+                # 如果没有output字段，尝试其他可能的文本字段
+                if not message:
+                    for key, value in outputs.items():
+                        if isinstance(value, str) and value.strip():
+                            message = value
+                            break
+            
+            # 提取消息内容和长度
+            
+            return ChatResponse(
+                message=message,
+                conversation_id=data.get("workflow_run_id"),
+                message_id=data.get("task_id"),
+                metadata={
+                    "status": workflow_data.get("status"),
+                    "elapsed_time": workflow_data.get("elapsed_time"),
+                    "total_tokens": workflow_data.get("total_tokens"),
+                    "total_steps": workflow_data.get("total_steps"),
+                    "created_at": workflow_data.get("created_at"),
+                    "finished_at": workflow_data.get("finished_at"),
+                    "error": workflow_data.get("error")
+                }
+            )
+        else:
+            # 普通聊天模式响应处理
+            return ChatResponse(
+                message=data.get("answer", ""),
+                conversation_id=data.get("conversation_id"),  # 使用API返回的conversation_id
+                message_id=data.get("message_id"),
+                metadata={
+                    "mode": data.get("mode"),
+                    "metadata": data.get("metadata"),
+                    "usage": data.get("usage"),
+                    "retriever_resources": data.get("retriever_resources"),
+                    "created_at": data.get("created_at")
+                }
+            )
+    
+    @staticmethod
+    def _create_text_chunk_response(data: Dict[str, Any], event: str, message: str, conversation_id_key: str = "conversation_id", metadata: Optional[Dict[str, Any]] = None) -> ChatResponse:
+        """创建文本块响应的辅助方法
+        
+        Args:
+            data (Dict[str, Any]): 原始数据
+            event (str): 事件类型
+            message (str): 消息内容
+            conversation_id_key (str): conversation_id的键名
+            metadata (Dict[str, Any]): 额外的元数据
+        
+        Returns:
+            ChatResponse: 构造的响应对象
+        """
+        base_metadata = {
+            "event": event,
+            "task_id": data.get("task_id")
+        }
+        
+        if metadata:
+            base_metadata.update(metadata)
+        
         return ChatResponse(
-            message=data.get("answer", ""),
-            conversation_id=data.get("conversation_id"),  # 使用API返回的conversation_id
-            message_id=data.get("message_id"),
-            metadata={
-                "mode": data.get("mode"),
-                "metadata": data.get("metadata"),
-                "usage": data.get("usage"),
-                "retriever_resources": data.get("retriever_resources"),
-                "created_at": data.get("created_at")
-            }
+            message=message,
+            conversation_id=data.get(conversation_id_key),
+            message_id=data.get("message_id") if event == "message" else data.get("task_id"),
+            metadata=base_metadata
         )
     
     @staticmethod
@@ -115,29 +203,74 @@ class DifyParser:
                     
                     # 1. 处理 message 事件 - LLM 返回文本块事件
                     if event == "message":
-                        # LLM 返回文本块事件
-                        yield ChatResponse(
-                            message=data.get("answer", ""),
-                            conversation_id=data.get("conversation_id"),
-                            message_id=data.get("message_id"),
-                            metadata={
-                                "event": event,
-                                "task_id": data.get("task_id"),
+                        # 从message事件中提取文本内容
+                        message_content = data.get("answer", "")
+                        workflow_run_id = data.get("conversation_id")
+                        
+                        # 复制data对象并修改，使其符合原生text_chunk事件结构
+                        transformed_data = data.copy()
+                        transformed_data["event"] = "text_chunk"  # 确保event字段正确
+                        transformed_data["workflow_run_id"] = workflow_run_id  # 添加workflow_run_id
+                        transformed_data["task_id"] = data.get("task_id", "")  # 添加task_id字段
+                        transformed_data["text"] = message_content  # 前端直接从顶级data对象获取text字段
+                        
+                        # 与原生text_chunk事件保持一致的data结构
+                        if "data" not in transformed_data:
+                            transformed_data["data"] = {}
+                        transformed_data["data"]["text"] = message_content
+                        transformed_data["data"]["from_variable_selector"] = []  # 符合原生结构
+                        
+                        response = DifyParser._create_text_chunk_response(
+                            transformed_data,  # 使用修改后的数据对象
+                            "text_chunk",  # 将事件类型修改为text_chunk
+                            message_content,  # 保留原始消息内容
+                            "workflow_run_id",  # 与原生text_chunk事件使用相同的conversation_id_key
+                            {
+                                "workflow_run_id": workflow_run_id,
+                                "text": message_content,
+                                "from_variable_selector": [],
+                                "original_event": "message",
                                 "id": data.get("id"),
                                 "created_at": data.get("created_at")
                             }
                         )
+                        
+                        # 转换message事件为text_chunk事件
+                        
+                        yield response
                     
                     # 2. 处理 message_end 事件 - 消息结束事件
                     elif event == "message_end":
-                        # 消息结束事件，表示文本流式返回结束
+                        # 消息结束事件 - 统一解析为与workflow_finished相似的格式，便于前端处理
+                        # 构造符合workflow_finished格式的数据结构
+                        workflow_data = {
+                            "status": "succeeded",  # 默认为成功状态
+                            "elapsed_time": None,
+                            "total_tokens": None,
+                            "total_steps": 1,  # 普通聊天可以视为单步操作
+                            "finished_at": data.get("created_at"),
+                            "error": ""
+                        }
+                        
+                        # 如果有usage信息，提取token数量
+                        if data.get("usage"):
+                            workflow_data["total_tokens"] = data.get("usage").get("total_tokens")
+                        
+                        # 构造与workflow_finished相同的event和metadata
                         yield ChatResponse(
-                            message="",
+                            message="",  # 结束事件消息内容为空
                             conversation_id=data.get("conversation_id"),
                             message_id=data.get("message_id"),
                             metadata={
-                                "event": event,
+                                "event": "workflow_finished",  # 将事件类型修改为workflow_finished
                                 "task_id": data.get("task_id"),
+                                "status": workflow_data["status"],
+                                "elapsed_time": workflow_data["elapsed_time"],
+                                "total_tokens": workflow_data["total_tokens"],
+                                "total_steps": workflow_data["total_steps"],
+                                "finished_at": workflow_data["finished_at"],
+                                "error": workflow_data["error"],
+                                "original_event": "message_end",  # 保留原始事件类型用于追踪
                                 "metadata": data.get("metadata"),
                                 "usage": data.get("usage"),
                                 "retriever_resources": data.get("retriever_resources")
@@ -224,18 +357,20 @@ class DifyParser:
                         chunk_data = data.get("data", {})
                         text = chunk_data.get("text", "")
                         
-                        yield ChatResponse(
-                            message=text,
-                            conversation_id=data.get("workflow_run_id"),
-                            message_id=data.get("task_id"),
-                            metadata={
-                                "event": event,
-                                "task_id": data.get("task_id"),
+                        response = DifyParser._create_text_chunk_response(
+                            data, 
+                            event, 
+                            text,
+                            "workflow_run_id",
+                            {
                                 "workflow_run_id": data.get("workflow_run_id"),
                                 "text": text,
                                 "from_variable_selector": chunk_data.get("from_variable_selector", [])
                             }
                         )
+                        
+                        # 处理text_chunk事件
+                        yield response
                     
                     # 9. 处理 workflow_finished 事件 - Workflow完成事件
                     elif event == "workflow_finished":

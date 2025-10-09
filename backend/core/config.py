@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # JWT配置
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 一周
     
     # 认证配置
     ENABLE_AUTH: bool = True  # 启用认证

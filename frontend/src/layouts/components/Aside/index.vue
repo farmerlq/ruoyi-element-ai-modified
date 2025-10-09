@@ -52,45 +52,7 @@ function handleCreatChat() {
   sessionStore.createSessionBtn();
 }
 
-// Clear all conversations
-async function handleClearAllChats() {
-  ElMessageBox.confirm(
-    '确定要删除所有对话记录吗？此操作不可恢复。',
-    '确认删除',
-    {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
-      confirmButtonClass: 'el-button--danger',
-    }
-  ).then(async () => {
-    await sessionStore.clearAllSessions();
-    // Also clear current session if it exists
-    sessionStore.setCurrentSession(null);
-    // Navigate to default chat page
-    router.replace({ name: 'chat' });
-  }).catch(() => {
-    // Cancelled
-  });
-}
 
-// Clear all messages
-async function handleClearAllMessages() {
-  ElMessageBox.confirm(
-    '确定要删除所有消息记录吗？此操作不可恢复。',
-    '确认删除',
-    {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning',
-      confirmButtonClass: 'el-button--danger',
-    }
-  ).then(async () => {
-    await sessionStore.clearAllMessages();
-  }).catch(() => {
-    // Cancelled
-  });
-}
 
 // 切换会话
 function handleChange(item: ConversationItem) {
@@ -214,29 +176,6 @@ function handleMenuCommand(command: any, item: ConversationItem) {
             </el-icon>
             <span class="creat-chat-text">新对话</span>
             <SvgIcon name="ctrl+k" size="37" />
-          </div>
-          
-          <!-- Add clear all button -->
-          <div 
-            v-if="conversationsList.length > 0"
-            class="clear-all-btn" 
-            @click="handleClearAllChats"
-          >
-            <el-icon class="clear-icon">
-              <Delete />
-            </el-icon>
-            <span class="clear-all-text">清空所有对话</span>
-          </div>
-          
-          <!-- Add clear all messages button -->
-          <div 
-            class="clear-all-btn clear-messages-btn" 
-            @click="handleClearAllMessages"
-          >
-            <el-icon class="clear-icon">
-              <Delete />
-            </el-icon>
-            <span class="clear-all-text">清空所有消息</span>
           </div>
         </div>
 
@@ -377,45 +316,6 @@ function handleMenuCommand(command: any, item: ConversationItem) {
             height: 24px;
             margin-left: auto;
             color: rgb(0 87 255 / 30%);
-          }
-        }
-        
-        // Add styles for clear all button
-        .clear-all-btn {
-          display: flex;
-          gap: 6px;
-          align-items: center;
-          padding: 8px 6px;
-          margin-top: 6px;
-          margin-bottom: 16px;
-          color: #f56c6c;
-          cursor: pointer;
-          user-select: none;
-          background-color: rgb(245 108 108 / 6%);
-          border: 1px solid rgb(245 108 108 / 15%);
-          border-radius: 12px;
-          &:hover {
-            background-color: rgb(245 108 108 / 12%);
-          }
-          .clear-all-text {
-            font-size: 14px;
-            font-weight: 700;
-            line-height: 22px;
-          }
-          .clear-icon {
-            width: 24px;
-            height: 24px;
-            font-size: 16px;
-          }
-        }
-        
-        // Specific styles for clear messages button
-        .clear-messages-btn {
-          color: #e6a23c;
-          background-color: rgb(230 162 60 / 6%);
-          border: 1px solid rgb(230 162 60 / 15%);
-          &:hover {
-            background-color: rgb(230 162 60 / 12%);
           }
         }
       }

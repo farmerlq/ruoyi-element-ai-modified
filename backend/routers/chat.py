@@ -12,8 +12,12 @@ from core.chat_service import ChatService
 from core.adapter import ChatRequest, ChatResponse
 from models.user import User
 from models.agent import Agent
+from models.message import Message
+from models.session import Conversation
+import uuid
 
 router = APIRouter(tags=["chat"])
+
 
 async def stream_chat_response(request: ChatRequest, db: Session, current_user: User) -> AsyncGenerator[str, None]:
     """生成流式聊天响应"""
@@ -27,6 +31,7 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
     total_sse_length = 0   # 新增：统计完整的SSE数据长度（包括data:前缀）
     total_tokens = 0
     workflow_events = []
+    full_message_content = ""  # 收集完整的消息内容
     
     try:
         # 实时转发所有流式响应事件
@@ -50,6 +55,8 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
                     # 统计所有消息内容长度
                     total_message_length += len(response.message)
                     total_data_length += len(response.message)  # 统计数据内容
+                    # 收集消息内容
+                    full_message_content += response.message
                 
                 # 统计所有事件类型的metadata数据长度
                 metadata_json = json.dumps(response.metadata)
@@ -66,6 +73,8 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
                 # 统计所有消息内容长度
                 total_message_length += len(message_content)
                 total_data_length += len(message_content)  # 统计数据内容
+                # 收集消息内容
+                full_message_content += message_content
                 
                 dify_event = {
                     "event": "message",
@@ -96,7 +105,7 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
                 dify_tokens = event.get("total_tokens", 0)
                 break
         
-        # 计算聊天接口的token：输入query长度 + 输出消息长度（按4个字符=1个token估算）
+        # 计算聊天接口的token：输入query长度 + 输出消息长度（按4字符=1token估算）
         input_query = request.get_query_text() or ""
         input_tokens = max(1, len(input_query) // 4)  # 至少1个token
         output_tokens = max(1, total_message_length // 4)  # 至少1个token
@@ -135,56 +144,114 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
         # 发送结束标记
         yield "data: [DONE]\n\n"
         
-        # 输出详细统计信息
-        print(f"📊 聊天接口统计: 总共处理了 {event_count} 个事件")
-        print(f"📊 事件类型分布: {event_types}")
-        print(f"📊 总消息长度: {total_message_length} 字符")
-        print(f"📊 所有数据内容总长度: {total_data_length} 字符 (包括metadata和消息内容)")
-        print(f"📊 完整SSE数据总长度: {total_sse_length} 字符 (包括data:前缀和换行符)")
-        print(f"📊 总传输数据量: {total_transfer_data} 字符 (SSE数据 + 消息内容)")
-        print(f"📊 Dify API返回token数: {dify_tokens} tokens")
-        print(f"📊 聊天接口输入token数: {input_tokens} tokens (query: '{input_query[:30]}{'...' if len(input_query) > 30 else ''}')")
-        print(f"📊 聊天接口输出token数: {output_tokens} tokens")
-        print(f"📊 总token数: {total_tokens} tokens (Dify API + 聊天接口)")
-        print(f"📊 估算总token数: {total_tokens_estimated} tokens (基于传输数据量)")
+        # 保存统计信息到数据库，确保前端显示和数据库保存的数据一致
+        # 注意：这里我们使用的是前端显示的total_tokens_estimated和cost
+        try:
+            # 保存统计信息到数据库
+            save_chat_statistics(db, request, total_tokens_estimated, cost, workflow_events, full_message_content)
+        except Exception as e:
+            logging.error(f"Error saving chat statistics to database: {e}")
+        
+        # 输出详细统计信息到日志
+        logging.info(f"📊 聊天接口统计: 总共处理了 {event_count} 个事件")
+        logging.info(f"📊 事件类型分布: {event_types}")
+        logging.info(f"📊 总消息长度: {total_message_length} 字符")
+        logging.info(f"📊 所有数据内容总长度: {total_data_length} 字符 (包括metadata和消息内容)")
+        logging.info(f"📊 完整SSE数据总长度: {total_sse_length} 字符 (包括data:前缀和换行符)")
+        logging.info(f"📊 总传输数据量: {total_transfer_data} 字符 (SSE数据 + 消息内容)")
+        logging.info(f"📊 Dify API返回token数: {dify_tokens} tokens")
+        logging.info(f"📊 聊天接口输入token数: {input_tokens} tokens (query: '{input_query[:30]}{'...' if len(input_query) > 30 else ''}')")
+        logging.info(f"📊 聊天接口输出token数: {output_tokens} tokens")
+        logging.info(f"📊 总token数: {total_tokens} tokens (Dify API + 聊天接口)")
+        logging.info(f"📊 估算总token数: {total_tokens_estimated} tokens (基于传输数据量)")
         if total_tokens_estimated > 0:
-            print(f"📊 预估费用: ¥{cost:.6f} (按每百万token 12元计算)")
+            logging.info(f"📊 预估费用: ¥{cost:.6f} (按每百万token 12元计算)")
         
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
+
+def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimated: int, cost: float, workflow_events: list, full_message_content: str = ""):
+    """保存聊天统计数据到数据库"""
+    try:
+        # 生成对话ID（如果有会话ID，强制使用传参的会话ID；如果没有会话ID就可以有解析出来的会话ID；如果都没有的话就新建会话ID）
+        conversation_id = request.conversation_id
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
+        
+        # 保存或更新对话
+        conversation = db.query(Conversation).filter(
+            Conversation.id == conversation_id
+        ).first()
+        
+        if not conversation:
+            conversation = Conversation(
+                id=conversation_id,
+                merchant_id=request.merchant_id,
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                title=request.get_query_text()[:100],  # 使用前100个字符作为标题
+                status="active"
+            )
+            db.add(conversation)
+            db.commit()
+            db.refresh(conversation)
+        elif request.conversation_id and request.conversation_id != conversation_id:
+            # 更新对话的更新时间
+            # 不需要手动设置 updated_at = None，SQLAlchemy 会自动处理
+            db.commit()
+        
+        # 保存用户消息
+        user_query = request.get_query_text() or ""
+        
+        user_message = Message(
+            conversation_id=conversation_id,
+            merchant_id=request.merchant_id,
+            user_id=request.user_id,
+            agent_id=request.agent_id,
+            role="user",
+            content=user_query
+        )
+        db.add(user_message)
+        
+        # 保存AI回复消息
+        ai_message = Message(
+            conversation_id=conversation_id,
+            merchant_id=request.merchant_id,
+            user_id=request.user_id,
+            agent_id=request.agent_id,
+            role="agent",
+            content=full_message_content,  # 保存完整的消息内容
+            workflow_events=workflow_events if workflow_events else None,
+            cost=cost,
+            total_tokens=total_tokens_estimated,  # 使用前端显示的估算值
+            total_tokens_estimated=total_tokens_estimated
+        )
+        db.add(ai_message)
+        
+        db.commit()
+    except Exception as e:
+        # 记录错误但不中断流式传输
+        logging.error(f"保存消息到数据库时出错: {e}")
+        db.rollback()
+
+
 async def generate_chat_response(request: ChatRequest, db: Session, current_user: User) -> ChatResponse:
     """生成非流式聊天响应"""
+    # 使用ChatService处理非流式响应
     chat_service = ChatService(db)
+    response = await chat_service.chat(request)
     
-    try:
-        response = await chat_service.chat(request)
-        
-        # 对于非流式响应，我们需要估算token数和费用
-        # 基于请求和响应内容进行估算
-        input_query = request.get_query_text() or ""
-        output_message = response.message or ""
-        
-        # 计算输入输出token数（按4字符=1token估算）
-        input_tokens = max(1, len(input_query) // 4)
-        output_tokens = max(1, len(output_message) // 4)
-        total_tokens_estimated = input_tokens + output_tokens
-        
-        # 计算费用（按每百万token 12元）
-        cost = (total_tokens_estimated / 1000000) * 12 if total_tokens_estimated > 0 else 0.0
-        
-        # 构建响应，包含估算的token数和费用
-        response.total_tokens_estimated = total_tokens_estimated
-        response.estimated_cost = cost
-        
-        return response
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error in generate_chat_response: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
+    # 确保响应中包含费用和token估算信息
+    if not hasattr(response, 'estimated_cost') or response.estimated_cost is None:
+        # 计算费用（按照每百万token 12元的价格）
+        if response.total_tokens_estimated:
+            response.estimated_cost = (response.total_tokens_estimated / 1000000) * 12
+        else:
+            response.estimated_cost = 0.0
+    
+    return response
+
 
 @router.post("/completions")
 async def chat_completion(
@@ -202,7 +269,17 @@ async def chat_completion(
             raise ValueError(f"Agent not found: {request.agent_id}")
         
         # 根据智能体配置中的stream参数决定返回类型
-        if agent.config_dict.get("stream", False):
+        # 注意：需要确保config_dict中的stream参数是布尔类型
+        stream_setting = agent.config_dict.get("stream")
+        should_stream = False
+        if isinstance(stream_setting, bool):
+            should_stream = stream_setting
+        elif isinstance(stream_setting, str):
+            should_stream = stream_setting.lower() == "true"
+        elif isinstance(stream_setting, (int, float)):
+            should_stream = bool(stream_setting)
+        
+        if should_stream:
             return StreamingResponse(
                 stream_chat_response(request, db, current_user),
                 media_type="text/event-stream"

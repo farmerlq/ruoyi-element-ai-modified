@@ -4,7 +4,6 @@ import logging
 import os
 from typing import AsyncGenerator, Dict, Any, Optional
 from httpx import HTTPStatusError, RequestError
-
 from .base import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
@@ -17,35 +16,68 @@ class DifyResponseParser:
     def parse_blocking_response(response_data: Dict[str, Any], is_workflow: bool) -> ChatResponse:
         """解析非流式响应"""
         if is_workflow:
-            # 工作流响应处理
-            outputs = response_data.get("outputs", {})
+            # 工作流响应处理 - 根据Dify官方API文档结构
+            # 工作流响应结构有两种可能：
+            # 1. 直接包含状态字段: {"workflow_run_id", "task_id", "status", "outputs", "error", "elapsed_time", "total_tokens", "total_steps", "created_at", "finished_at"}
+            # 2. 嵌套在data字段中: {"task_id", "workflow_run_id", "data": {"status", "outputs", "error", "elapsed_time", "total_tokens", "total_steps", "created_at", "finished_at"}}
+            
+            # 检查是否是嵌套结构
+            if "data" in response_data and isinstance(response_data["data"], dict):
+                # 嵌套结构：从data字段提取实际数据
+                data = response_data["data"]
+                outputs = data.get("outputs", {})
+                workflow_run_id = response_data.get("workflow_run_id")
+                task_id = response_data.get("task_id")
+            else:
+                # 直接结构
+                data = response_data
+                outputs = response_data.get("outputs", {})
+                workflow_run_id = response_data.get("workflow_run_id")
+                task_id = response_data.get("task_id")
+            
+            # 从outputs字段提取消息内容
             message = ""
             if isinstance(outputs, dict):
+                # 优先从outputs.text提取消息
                 message = outputs.get("text", "")
-                # 如果没有text字段，尝试其他可能的文本字段
+                # 如果没有text字段，尝试output字段（Dify工作流常用）
+                if not message:
+                    message = outputs.get("output", "")
+                # 如果还没有，尝试其他可能的文本字段
                 if not message:
                     for key, value in outputs.items():
-                        if isinstance(value, str):
+                        if isinstance(value, str) and value.strip():
                             message = value
                             break
+                        elif isinstance(value, dict):
+                            # 检查嵌套字典中的文本字段
+                            nested_text = value.get("text", "")
+                            if nested_text:
+                                message = nested_text
+                                break
             
+            total_tokens = data.get("total_tokens", 0)
             return ChatResponse(
                 message=message,
                 conversation_id=response_data.get("conversation_id"),
-                message_id=response_data.get("task_id"),
+                message_id=task_id,
                 metadata={
-                    "workflow_run_id": response_data.get("workflow_run_id"),
-                    "task_id": response_data.get("task_id"),
-                    "status": response_data.get("status"),
-                    "elapsed_time": response_data.get("elapsed_time"),
-                    "total_tokens": response_data.get("total_tokens"),
-                    "total_steps": response_data.get("total_steps"),
-                    "finished_at": response_data.get("finished_at"),
-                    "error": response_data.get("error")
-                }
+                    "workflow_run_id": workflow_run_id,
+                    "task_id": task_id,
+                    "status": data.get("status"),
+                    "elapsed_time": data.get("elapsed_time"),
+                    "total_tokens": total_tokens,
+                    "total_steps": data.get("total_steps"),
+                    "created_at": data.get("created_at"),
+                    "finished_at": data.get("finished_at"),
+                    "error": data.get("error")
+                },
+                total_tokens_estimated=total_tokens  # 将实际token数赋值给估算字段
             )
         else:
             # 聊天接口响应处理
+            usage = response_data.get("usage", {})
+            total_tokens = usage.get("total_tokens", 0)
             return ChatResponse(
                 message=response_data.get("answer", ""),
                 conversation_id=response_data.get("conversation_id"),
@@ -54,9 +86,10 @@ class DifyResponseParser:
                     "task_id": response_data.get("task_id"),
                     "conversation_id": response_data.get("conversation_id"),
                     "metadata": response_data.get("metadata"),
-                    "usage": response_data.get("usage"),
+                    "usage": usage,
                     "retriever_resources": response_data.get("retriever_resources")
-                }
+                },
+                total_tokens_estimated=total_tokens  # 将实际token数赋值给估算字段
             )
     
     @staticmethod
@@ -101,7 +134,7 @@ class DifyResponseParser:
                 conversation_id=request.conversation_id,
                 message_id=task_id or message_id or "",
                 metadata={
-                    "event": event,
+                    "event": "text_chunk",
                     "workflow_run_id": workflow_run_id,
                     "task_id": task_id,
                     "from_variable_selector": from_variable_selector,
@@ -181,6 +214,8 @@ class DifyResponseParser:
         
         # 统一处理消息相关事件
         elif event == "message_end":
+            usage = data.get("usage", {})
+            total_tokens = usage.get("total_tokens", 0)
             return ChatResponse(
                 message="",
                 conversation_id=request.conversation_id,
@@ -189,9 +224,10 @@ class DifyResponseParser:
                     "event": event,
                     "task_id": data.get("task_id"),
                     "metadata": data.get("metadata"),
-                    "usage": data.get("usage"),
+                    "usage": usage,
                     "retriever_resources": data.get("retriever_resources")
-                }
+                },
+                total_tokens_estimated=total_tokens  # 将实际token数赋值给估算字段
             )
         
         elif event == "tts_message":
@@ -250,6 +286,28 @@ class DifyResponseParser:
             # 心跳事件，不需要返回内容
             return None
         
+        # 处理workflow相关的statistics事件
+        elif event == "statistics":
+            total_tokens = data.get("total_tokens", 0)
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("task_id"),
+                metadata={
+                    "event": event,
+                    "workflow_run_id": data.get("workflow_run_id"),
+                    "task_id": data.get("task_id"),
+                    "status": data.get("status"),
+                    "elapsed_time": data.get("elapsed_time"),
+                    "total_tokens": total_tokens,
+                    "total_steps": data.get("total_steps"),
+                    "created_at": data.get("created_at"),
+                    "finished_at": data.get("finished_at"),
+                    "error": data.get("error")
+                },
+                total_tokens_estimated=total_tokens  # 将实际token数赋值给估算字段
+            )
+        
         return None
 
 
@@ -292,19 +350,19 @@ class DifyAdapter:
                 payload = {
                     "inputs": inputs,
                     "response_mode": "blocking",
-                    "user": str(request.user_id)
+                    "user": request.user_id
                 }
             else:
                 # 聊天接口参数
                 payload = {
                     "inputs": {},
                     "query": request.get_query_text(),
-                    "user": str(request.user_id),
+                    "user": request.user_id,
                     "response_mode": "blocking"
                 }
             
-            if request.conversation_id:
-                payload["conversation_id"] = request.conversation_id
+            # if request.conversation_id:
+            #     payload["conversation_id"] = request.conversation_id
                 
             response = await self.client.post(endpoint, json=payload)
             response.raise_for_status()
@@ -319,7 +377,7 @@ class DifyAdapter:
                 f"Dify API HTTP error: {e.response.status_code} {e.response.reason_phrase}"
                 f"\nURL: {e.request.url}"
                 f"\nRequest: {e.request.content.decode('utf-8') if e.request.content else 'None'}"
-                f"\nResponse: {await e.response.aread().decode('utf-8') if hasattr(e.response, 'aread') else 'Cannot read streaming response'}"
+                f"\nResponse: {e.response.text if hasattr(e.response, 'text') else 'Cannot read streaming response'}"
             )
             raise
         except RequestError as e:
@@ -362,8 +420,8 @@ class DifyAdapter:
                     "response_mode": "streaming"
                 }
             
-            if request.conversation_id:
-                payload["conversation_id"] = request.conversation_id
+            # if request.conversation_id:
+            #     payload["conversation_id"] = request.conversation_id
                 
             async with self.client.stream("POST", endpoint, json=payload) as response:
                 response.raise_for_status()
@@ -387,9 +445,9 @@ class DifyAdapter:
         except HTTPStatusError as e:
             # 对于流式响应，如果已经关闭，不能再次读取内容
             response_content = "Cannot read streaming response (stream closed)"
-            if hasattr(e.response, 'aread'):
+            if hasattr(e.response, 'text'):
                 try:
-                    response_content = await (await e.response.aread()).decode('utf-8')
+                    response_content = e.response.text
                 except Exception:
                     response_content = "Cannot read streaming response (error reading)"
             

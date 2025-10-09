@@ -44,7 +44,7 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
     user = db.query(User).filter(User.username == username).first()
     if not user:
         return None
-    if not verify_password(password, user.password_hash):
+    if not verify_password(password, str(user.password_hash)):
         return None
     return user
 
@@ -62,19 +62,33 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    token: Optional[str] = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
-) -> User:
+) -> Optional[User]:
     """
     获取当前用户
     """
-    logger.debug(f"Token received: {token}")
-    
     # 如果认证功能未启用，则跳过认证
     if not settings.ENABLE_AUTH:
-        # 返回一个默认用户或根据需要处理
-        logger.debug("Auth disabled, returning None")
-        return None
+        # 创建一个默认用户对象
+        default_user = User(
+            id=0,
+            username="default",
+            merchant_id=0,
+            email="default@example.com",
+            password_hash="",
+            role="user",
+            status="active"
+        )
+        return default_user
+    
+    # 如果没有提供token，抛出认证异常
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -84,27 +98,21 @@ def get_current_user(
     
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        logger.debug(f"Decoded payload: {payload}")
-        username: str = payload.get("sub")
+        username = payload.get("sub")
         if username is None:
-            logger.debug("Username is None in payload")
             raise credentials_exception
-    except JWTError as e:
-        logger.debug(f"JWTError: {e}")
+    except JWTError:
         raise credentials_exception
-    except Exception as e:
-        logger.debug(f"Unexpected error: {e}")
+    except Exception:
         raise credentials_exception
         
     user = db.query(User).filter(User.username == username).first()
     if user is None:
-        logger.debug("User not found in database")
         raise credentials_exception
-    logger.debug(f"User found: {user.username}")
     return user
 
 def get_current_user_or_none(
-    token: str = Depends(oauth2_scheme),
+    token: Optional[str] = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
 ) -> Optional[User]:
     """
@@ -123,12 +131,16 @@ def get_current_user_or_none(
 
 def get_current_merchant_id(
     db: Session = Depends(get_db),
-    token: str = Depends(oauth2_scheme)
+    token: Optional[str] = Depends(oauth2_scheme)
 ) -> Optional[int]:
     """
     从令牌中获取当前商户ID
     """
     if not settings.ENABLE_AUTH:
+        return None
+    
+    # 如果没有提供token，返回None
+    if token is None:
         return None
     
     credentials_exception = HTTPException(
@@ -139,14 +151,14 @@ def get_current_merchant_id(
     
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        merchant_id: int = payload.get("merchant_id")
+        merchant_id = payload.get("merchant_id")
         if merchant_id is None:
             # 如果令牌中没有商户ID，尝试从用户信息中获取
-            username: str = payload.get("sub")
+            username = payload.get("sub")
             if username is not None:
                 user = db.query(User).filter(User.username == username).first()
                 if user is not None:
-                    return user.merchant_id
+                    return user.merchant_id  # type: ignore
             raise credentials_exception
         return merchant_id
     except JWTError:
@@ -155,12 +167,16 @@ def get_current_merchant_id(
         raise credentials_exception
 
 def get_token_payload(
-    token: str = Depends(oauth2_scheme)
+    token: Optional[str] = Depends(oauth2_scheme)
 ) -> Optional[Dict[str, Any]]:
     """
     获取令牌中的所有载荷信息
     """
     if not settings.ENABLE_AUTH:
+        return None
+    
+    # 如果没有提供token，返回None
+    if token is None:
         return None
     
     try:

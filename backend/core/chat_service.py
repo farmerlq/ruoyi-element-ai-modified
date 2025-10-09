@@ -7,6 +7,8 @@ from models.message import Message
 import asyncio
 import uuid
 import re
+import inspect
+import json
 
 class ChatService:
     """聊天服务类"""
@@ -22,10 +24,13 @@ class ChatService:
             raise ValueError(f"Agent not found: {request.agent_id}")
         
         # 根据智能体type字段判断是用哪个平台的适配器
-        adapter_type = agent.type
+        adapter_type: str = str(agent.type)
         
         # 使用智能体的配置（config）创建适配器
-        adapter_config = agent.config_dict.copy()
+        agent_config_dict = agent.config_dict
+        adapter_config = dict[str, Any]()
+        for key, value in agent_config_dict.items():
+            adapter_config[key] = value
         
         # 确保配置中包含必要的参数
         if "api_key" not in adapter_config:
@@ -35,51 +40,45 @@ class ChatService:
         adapter = AdapterFactory.create_adapter(adapter_type, adapter_config)
         
         try:
-            # 根据智能体的配置（config）中的stream判断是流式还是非流式响应
-            is_stream = adapter_config.get("stream", False)
+            # 执行普通聊天
+            response = await adapter.chat(request)
             
-            if is_stream:
-                # 如果配置要求流式响应，但我们在这个方法中需要返回单个响应，
-                # 我们需要收集所有流式响应并合并它们
-                full_message = ""
-                metadata_list = []
-                conversation_id = None
-                message_id = None
-                
-                async for response in adapter.chat_stream(request):
-                    full_message += response.message
-                    if response.metadata:
-                        metadata_list.append(response.metadata)
-                    # 保存消息ID
-                    # 会话ID应该始终使用请求中的会话ID，不需要从响应中收集
-                    if response.message_id:
-                        message_id = response.message_id
-                
-                # 创建最终的响应对象
-                # 会话ID应该始终使用请求中的会话ID
-                final_response = ChatResponse(
-                    message=full_message,
-                    conversation_id=request.conversation_id,
-                    message_id=message_id,
-                    metadata={"stream_responses": metadata_list}
-                )
-                
-                # 保存对话和消息到数据库
-                self._save_conversation_and_message(request, final_response, agent)
-                
-                return final_response
-            else:
-                # 执行普通聊天
-                response = await adapter.chat(request)
-                
-                # 保存对话和消息到数据库
-                self._save_conversation_and_message(request, response, agent)
-                
-                return response
+            # 计算估算的token数（包括网络传输数据）
+            input_query = request.get_query_text() or ""
+            output_message = response.message or ""
+            
+            # 计算输入输出token数（按4字符=1token估算）
+            input_tokens = max(1, len(input_query) // 4)
+            output_tokens = max(1, len(output_message) // 4)
+            # 计算完整的传输数据长度（包括JSON结构）
+            response_json = json.dumps({
+                "message": response.message,
+                "conversation_id": response.conversation_id,
+                "message_id": response.message_id,
+                "metadata": response.metadata
+            })
+            response_data_length = len(response_json)
+            
+            # 总传输数据长度 = 输入查询长度 + 响应数据长度
+            total_transfer_data = len(input_query) + response_data_length
+            
+            # 估算总token数（基于传输数据量）
+            total_tokens_estimated = max(1, total_transfer_data // 4)
+            
+            # 将估算的token数添加到响应中
+            response.total_tokens_estimated = total_tokens_estimated
+            
+            # 保存对话和消息到数据库
+            self._save_conversation_and_message(request, response, agent)
+            
+            return response
         finally:
             # 关闭适配器连接（如果有的话）
-            if hasattr(adapter, 'close'):
+            # BaseAdapter定义了close抽象方法，所以我们可以安全地调用它
+            try:
                 await adapter.close()
+            except Exception as e:
+                pass
     
     async def chat_stream(self, request: ChatRequest) -> AsyncGenerator[ChatResponse, None]:
         """处理流式聊天请求"""
@@ -89,10 +88,13 @@ class ChatService:
             raise ValueError(f"Agent not found: {request.agent_id}")
         
         # 根据智能体type字段判断是用哪个平台的适配器
-        adapter_type = agent.type
+        adapter_type: str = str(agent.type)
         
         # 使用智能体的配置（config）创建适配器
-        adapter_config = agent.config_dict.copy()
+        agent_config_dict = agent.config_dict
+        adapter_config = dict[str, Any]()
+        for key, value in agent_config_dict.items():
+            adapter_config[key] = value
         
         # 确保配置中包含必要的参数
         if "api_key" not in adapter_config:
@@ -109,7 +111,7 @@ class ChatService:
         
         try:
             # 执行流式聊天
-            async for response in adapter.chat_stream(request):
+            async for response in adapter.chat_stream(request):  # type: ignore
                 # 收集消息内容
                 if response.message:
                     full_message += response.message
@@ -130,30 +132,101 @@ class ChatService:
                 yield response
         finally:
             # 关闭适配器连接（如果有的话）
-            if hasattr(adapter, 'close'):
+            # BaseAdapter定义了close抽象方法，所以我们可以安全地调用它
+            try:
                 await adapter.close()
+            except Exception as e:
+                pass
+    
+    def _save_conversation_and_message_stream(self, request: ChatRequest, full_message: str, workflow_events: list, agent):
+        """保存流式对话和消息到数据库"""
+        try:
+            # 生成对话ID（如果有会话ID，强制使用传参的会话ID；如果没有会话ID就可以有解析出来的会话ID；如果都没有的话就新建会话ID）
+            conversation_id = request.conversation_id
+            if not conversation_id:
+                conversation_id = str(uuid.uuid4())
             
-            # 在所有流式响应完成后，只保存最终的完整消息到数据库
-            # 不创建额外的ChatResponse，避免重复
-            if full_message or workflow_events:
-                # 直接保存收集到的数据到数据库
-                final_response = ChatResponse(
-                    message=full_message,
-                    conversation_id=request.conversation_id,
-                    message_id=message_id,
-                    metadata={"workflow_events": workflow_events} if workflow_events else None
+            # 保存或更新对话
+            conversation = self.db.query(Conversation).filter(
+                Conversation.id == conversation_id
+            ).first()
+            
+            if not conversation:
+                conversation = Conversation(
+                    id=conversation_id,
+                    merchant_id=request.merchant_id,
+                    user_id=request.user_id,
+                    agent_id=request.agent_id,
+                    title=request.get_query_text()[:100],  # 使用前100个字符作为标题
+                    status="active"
                 )
-                # 保存对话和消息到数据库
-                self._save_conversation_and_message(request, final_response, agent)
-            else:
-                # 即使没有消息内容，也应该保存用户消息
-                final_response = ChatResponse(
-                    message="",
-                    conversation_id=request.conversation_id,
-                    message_id=message_id,
-                    metadata=None
-                )
-                self._save_conversation_and_message(request, final_response, agent)
+                self.db.add(conversation)
+                self.db.commit()
+                self.db.refresh(conversation)
+            elif request.conversation_id and request.conversation_id != conversation_id:
+                # 更新对话的更新时间
+                # 让数据库自动更新
+                self.db.commit()
+        
+            # 保存用户消息
+            user_query = request.get_query_text() or ""
+            
+            user_message = Message(
+                conversation_id=conversation_id,
+                merchant_id=request.merchant_id,
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                role="user",
+                content=user_query
+            )
+            self.db.add(user_message)
+            
+            # 保存AI回复消息（总是保存，即使内容为空）
+            # 提取workflow_events（如果有的话）
+            metadata_for_storage = None  # 不再存储metadata，因为信息已经提取到workflow_events中
+            
+            # 计算token和费用
+            # 基于完整消息内容计算token数（按4字符=1token估算）
+            content_length = len(full_message)
+            content_tokens = max(1, content_length // 4)
+            
+            # 计算workflow_events的token数
+            workflow_tokens = 0
+            if workflow_events:
+                try:
+                    workflow_events_str = json.dumps(workflow_events)
+                    workflow_tokens = max(1, len(workflow_events_str) // 4)
+                except Exception:
+                    workflow_tokens = 1
+            
+            # 总token数
+            total_tokens = content_tokens + workflow_tokens
+            
+            # 计算费用（按照每百万token 12元的价格）
+            cost = 0.0
+            if total_tokens > 0:
+                cost = (total_tokens / 1000000) * 12
+            
+            ai_message = Message(
+                conversation_id=conversation_id,
+                merchant_id=request.merchant_id,
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                role="agent",
+                content=full_message,  # 确保保存完整的流式响应内容
+                message_metadata=metadata_for_storage,
+                workflow_events=workflow_events if workflow_events else None,
+                cost=cost,
+                total_tokens=total_tokens,
+                total_tokens_estimated=total_tokens  # 使用实际计算的token数
+            )
+            self.db.add(ai_message)
+            
+            self.db.commit()
+        except Exception as e:
+            # 记录错误但不中断流式传输
+            print(f"保存消息到数据库时出错: {e}")
+            self.db.rollback()
     
     def _save_conversation_and_message(self, request: ChatRequest, response: ChatResponse, agent):
         """保存对话和消息到数据库"""
@@ -182,7 +255,7 @@ class ChatService:
                 self.db.refresh(conversation)
             elif request.conversation_id and request.conversation_id != conversation_id:
                 # 更新对话的更新时间
-                conversation.updated_at = None  # 让数据库自动更新
+                # 让数据库自动更新
                 self.db.commit()
         
             # 保存用户消息
@@ -217,22 +290,27 @@ class ChatService:
                     # 从message_metadata中移除工作流事件数据，避免重复存储
                     metadata_for_storage = None
             
-            # 提取总token数 - 优先使用估算的token数
-            total_tokens = 0
-            
-            # 首先检查响应中是否有估算的token数
-            if response.total_tokens_estimated:
-                total_tokens = response.total_tokens_estimated
+            # 计算token和费用
+            # 优先使用response.total_tokens的值，如果不存在则使用total_tokens_estimated
+            total_tokens = response.total_tokens if hasattr(response, 'total_tokens') and response.total_tokens is not None else response.total_tokens_estimated
+            # 确保token数不为None且不为负数
+            if total_tokens is None:
+                # 使用基于内容和workflow_events的备用计算方法
+                content_length = len(response.message or "")
+                workflow_events_length = 0
+                if workflow_events:
+                    try:
+                        workflow_events_str = json.dumps(workflow_events)
+                        workflow_events_length = len(workflow_events_str)
+                    except Exception:
+                        workflow_events_length = 0
+                
+                # 计算content_tokens和workflow_tokens
+                content_tokens = max(1, content_length // 4)
+                workflow_tokens = max(1, workflow_events_length // 4) if workflow_events_length > 0 else 1
+                total_tokens = content_tokens + workflow_tokens
             else:
-                # 如果没有估算的token数，从workflow_events中查找token信息
-                for event in workflow_events:
-                    if event.get("event") == "message_end" and event.get("usage"):
-                        usage_info = event.get("usage")
-                        total_tokens = usage_info.get("total_tokens", 0)
-                        break
-                    elif event.get("event") == "workflow_finished" and event.get("total_tokens"):
-                        total_tokens = event.get("total_tokens", 0)
-                        break
+                total_tokens = max(0, total_tokens)
             
             # 计算费用（按照每百万token 12元的价格）
             cost = 0.0
@@ -247,9 +325,10 @@ class ChatService:
                 role="agent",
                 content=response.message or "",  # 确保content不为None
                 message_metadata=metadata_for_storage,
-                workflow_events=workflow_events,
+                workflow_events=workflow_events if workflow_events else None,
                 cost=cost,
-                total_tokens=total_tokens
+                total_tokens=total_tokens,
+                total_tokens_estimated=response.total_tokens_estimated  # 确保保存估算的token数
             )
             self.db.add(ai_message)
             

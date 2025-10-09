@@ -59,6 +59,7 @@ class ChatResponse(BaseModel):
     conversation_id: Optional[str] = None
     message_id: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    total_tokens: Optional[int] = None  # 添加：实际总token数
     total_tokens_estimated: Optional[int] = None  # 新增：估算的总token数
     estimated_cost: Optional[float] = None       # 新增：估算的费用
 
@@ -86,4 +87,9 @@ class BaseAdapter(ABC):
     @abstractmethod
     async def delete_conversation(self, conversation_id: str) -> bool:
         """删除对话"""
+        pass
+    
+    @abstractmethod
+    async def close(self):
+        """关闭适配器连接"""
         pass

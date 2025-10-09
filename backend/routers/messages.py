@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 import logging
 from datetime import datetime
 from core.database import get_db
@@ -21,7 +21,6 @@ def create_message(
     db: Session = Depends(get_db)
 ):
     try:
-        logger.debug(f"Creating message: {message}")
         db_message = DBMessage(**message.dict())
         db.add(db_message)
         
@@ -29,50 +28,30 @@ def create_message(
         if message.conversation_id:
             conversation = db.query(Conversation).filter(Conversation.id == message.conversation_id).first()
             if conversation:
-                conversation.updated_at = datetime.utcnow()
+                # SQLAlchemy会自动处理onupdate，不需要手动设置updated_at
+                # 只需要触发SQLAlchemy的更新机制
+                conversation.title = conversation.title  # 触发更新
         
         db.commit()
         db.refresh(db_message)
-        logger.debug(f"Message created successfully: {db_message.id}")
         return db_message
     except Exception as e:
         logger.error(f"Error creating message: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.get("/{message_id}", response_model=MessageSchema)
-def read_message(
-    message_id: int, 
-    db: Session = Depends(get_db)
-):
-    try:
-        logger.debug(f"Fetching message with id: {message_id}")
-        db_message = db.query(DBMessage).filter(DBMessage.id == message_id).first()
-        
-        if db_message is None:
-            logger.debug(f"Message with id {message_id} not found")
-            raise HTTPException(status_code=404, detail="Message not found")
-        logger.debug(f"Message found: {db_message.id}")
-        return db_message
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching message: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 @router.get("/", response_model=List[MessageSchema])
 def read_messages(
     skip: int = 0, 
     limit: int = 100, 
-    session_id: str = None,  # 保持向后兼容
-    conversation_id: str = None,  # 添加新的参数名
+    session_id: Optional[str] = None,  # 保持向后兼容
+    conversation_id: Optional[str] = None,  # 添加新的参数名
     db: Session = Depends(get_db),
     current_user = Depends(get_optional_current_user)  # 改为可选用户依赖
 ):
     try:
         # 优先使用 conversation_id，如果没有则使用 session_id
         filter_id = conversation_id if conversation_id is not None else session_id
-        logger.debug(f"Fetching messages with filter_id: {filter_id}, skip: {skip}, limit: {limit}")
         query = db.query(DBMessage)
         
         # 添加会话ID过滤（使用conversation_id字段）
@@ -80,15 +59,12 @@ def read_messages(
             query = query.filter(DBMessage.conversation_id == filter_id)
             
         messages = query.offset(skip).limit(limit).all()
-        logger.debug(f"Found {len(messages)} messages")
         
-        # 调试：检查第一条消息的序列化
+        # 检查第一条消息的序列化
         if messages:
-            logger.debug(f"First message id: {messages[0].id}, content length: {len(messages[0].content) if messages[0].content else 0}")
             # 尝试序列化第一条消息来检查错误
             try:
-                message_data = MessageSchema.model_validate(messages[0])
-                logger.debug(f"Serialization successful for message {messages[0].id}")
+                MessageSchema.model_validate(messages[0])
             except Exception as e:
                 logger.error(f"Serialization failed for message {messages[0].id}: {str(e)}", exc_info=True)
                 raise
@@ -98,6 +74,23 @@ def read_messages(
         logger.error(f"Error fetching messages: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+@router.get("/{message_id}", response_model=MessageSchema)
+def read_message(
+    message_id: int, 
+    db: Session = Depends(get_db)
+):
+    try:
+        db_message = db.query(DBMessage).filter(DBMessage.id == message_id).first()
+        
+        if db_message is None:
+            raise HTTPException(status_code=404, detail="Message not found")
+        return db_message
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching message: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @router.put("/{message_id}", response_model=MessageSchema)
 def update_message(
     message_id: int, 
@@ -105,11 +98,9 @@ def update_message(
     db: Session = Depends(get_db)
 ):
     try:
-        logger.debug(f"Updating message with id: {message_id}")
         db_message = db.query(DBMessage).filter(DBMessage.id == message_id).first()
         
         if db_message is None:
-            logger.debug(f"Message with id {message_id} not found")
             raise HTTPException(status_code=404, detail="Message not found")
         
         for key, value in message.dict(exclude_unset=True).items():
@@ -117,12 +108,25 @@ def update_message(
             
         db.commit()
         db.refresh(db_message)
-        logger.debug(f"Message updated successfully: {db_message.id}")
         return db_message
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating message: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.delete("/all", status_code=204)
+def delete_all_messages(
+    db: Session = Depends(get_db)
+):
+    try:
+        # 删除所有消息
+        db.query(DBMessage).delete()
+        db.commit()
+        return
+    except Exception as e:
+        logger.error(f"Error deleting all messages: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -132,16 +136,13 @@ def delete_message(
     db: Session = Depends(get_db)
 ):
     try:
-        logger.debug(f"Deleting message with id: {message_id}")
         db_message = db.query(DBMessage).filter(DBMessage.id == message_id).first()
         
         if db_message is None:
-            logger.debug(f"Message with id {message_id} not found")
             raise HTTPException(status_code=404, detail="Message not found")
             
         db.delete(db_message)
         db.commit()
-        logger.debug(f"Message deleted successfully: {message_id}")
         return
     except HTTPException:
         raise
