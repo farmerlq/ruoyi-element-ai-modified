@@ -1,1580 +1,888 @@
-<script setup lang="ts">
-// 删除无法找到的模块导入，这些类型通常可以从组件本身获取或隐式推断
-import { ArrowLeftBold, ArrowRightBold } from '@element-plus/icons-vue';
-import { ElMessage, ElDrawer } from 'element-plus';
-import { useHookFetch } from 'hook-fetch/vue';
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
-import { Attachments, BubbleList, Sender, Thinking } from 'vue-element-plus-x';
-import { useRoute } from 'vue-router';
-import { send } from '@/api';
-import AgentSelect from '@/components/AgentSelect/index.vue';
-import FilesSelect from '@/components/FilesSelect/index.vue';
-import MessageActions from '@/components/MessageActions/index.vue';
-import EnhancedMarkdown from '@/components/EnhancedMarkdown/index.vue';
-import ThinkingProcess from '@/components/ThinkingProcess/index.vue';
-import { useAgentStore } from '@/stores/modules/agent';
-import { useChatStore } from '@/stores/modules/chat';
-import { useFilesStore } from '@/stores/modules/files';
-import { useSessionStore } from '@/stores/modules/session';
-import { useUserStore } from '@/stores/modules/user';
-import { DifyRenderer } from '@/utils/dify-parser';
-
-/**
- * Thinking组件状态类型
- */
-type ThinkingStatus = 'start' | 'end' | 'error' | 'thinking';
-
-/**
- * 文件卡片属性接口 - 与vue-element-plus-x库兼容
- */
-interface FilesCardProps {
-  id?: string;
-  name?: string;
-  size?: number;
-  url?: string;
-  type?: string;
-  status?: 'done' | 'error' | 'uploading' | string;
-  [key: string]: any;
-}
-
-/**
- * Bubble列表项属性接口
- */
-interface BubbleListItemProps {
-  key?: number | string;
-  role?: 'user' | 'agent' | string;
-  avatar?: string;
-  content?: string;
-  placement?: 'start' | 'end';
-  isMarkdown?: boolean;
-  avatarSize?: string;
-  typing?: boolean;
-  loading?: boolean;
-  thinkingStatus?: ThinkingStatus;
-  thinkingCollapse?: boolean;
-  reason_content?: string;
-  reasoning_content?: string;
-  workflowEvents?: WorkflowEventItem[];
-  workflowEventsCollapsed?: boolean;
-  workflow_events?: any[];
-  thinkCollapse?: boolean;
-  totalTokens?: number;
-  totalCost?: number;
-  timestamp?: string;
-  noStyle?: boolean;
-  files?: FilesCardProps[];
-  [key: string]: any;
-}
-
-/**
- * Bubble列表实例接口
- */
-interface BubbleListInstance {
-  scrollToBottom: () => void;
-  [key: string]: any;
-}
-
-/**
- * 工作流事件项接口
- */
-interface WorkflowEventItem {
-  event?: string;
-  type?: string;
-  message?: string;
-  data: Record<string, any>;
-  dataCollapsed?: boolean;
-  id?: string; // 添加可选id字段
-}
-
-// 定义工作流事件类型
-
-interface MessageItem extends BubbleListItemProps {
-  key: number;
-  role: 'user' | 'agent';
-  avatar: string;
-  content?: string;
-  placement: 'start' | 'end';
-  isMarkdown?: boolean;
-  avatarSize?: string;
-  typing?: boolean;
-  loading?: boolean;
-  thinkingStatus?: ThinkingStatus;
-  thinkingCollapse?: boolean;
-  reason_content?: string;
-  reasoning_content?: string;
-  workflowEvents?: WorkflowEventItem[];
-  workflowEventsCollapsed?: boolean;
-  workflow_events?: any[]; // 添加这个属性以匹配chatStore的类型要求
-  thinkCollapse?: boolean;
-  totalTokens?: number;
-  totalCost?: number;
-  timestamp?: string;
-  noStyle?: boolean;
-  files?: FilesCardProps[];
-}
-
-const route = useRoute();
-const chatStore = useChatStore();
-const agentStore = useAgentStore();
-const filesStore = useFilesStore();
-const userStore = useUserStore();
-const sessionStore = useSessionStore();
-
-// 消息操作抽屉
-const messageActionsDrawer = ref(false);
-
-// 用户头像
-const avatar = computed(() => {
-  const userInfo = userStore.userInfo;
-  return userInfo?.avatar || new URL('@/assets/images/logo.png', import.meta.url).href;
-});
-
-const inputValue = ref('');
-const senderRef = ref<InstanceType<typeof Sender> | null>(null);
-const bubbleItems = ref<MessageItem[]>([]);
-const bubbleListRef = ref<BubbleListInstance | null>(null);
-
-// Dify响应渲染器
-const difyRenderer = new DifyRenderer();
-
-const { loading: isLoading, cancel } = useHookFetch({
-  request: send,
-  onError: () => {
-    // 错误处理
-  },
-});
-// 记录进入思考中
-const isThinking = ref(false);
-
-// 打开消息操作抽屉
-const openMessageActions = () => {
-  messageActionsDrawer.value = true;
-};
-
-// 处理保存消息
-const handleSaveMessages = (messages: any[]) => {
-  // 实际的保存逻辑
-  console.log('保存消息:', messages);
-  ElMessage.success(`已保存 ${messages.length} 条消息`);
-  
-  // 这里可以实现实际的保存逻辑，例如：
-  // 1. 生成文件并下载
-  // 2. 保存到数据库
-  // 3. 发送到服务器
-  
-  // 示例：生成文本文件并下载
-  const content = messages.map(msg => 
-    `[${msg.role === 'user' ? '用户' : 'AI'}] ${msg.content}`
-  ).join('\n\n');
-  
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `聊天记录_${new Date().toISOString().slice(0, 10)}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-};
-
-// 处理分享消息
-const handleShareMessages = (messages: any[]) => {
-  // 实际的分享逻辑
-  console.log('分享消息:', messages);
-  ElMessage.success(`已分享 ${messages.length} 条消息`);
-  
-  // 这里可以实现实际的分享逻辑，例如：
-  // 1. 生成分享链接
-  // 2. 复制到剪贴板
-  // 3. 调用系统分享功能
-  
-  // 示例：将消息内容复制到剪贴板
-  const content = messages.map(msg => 
-    `[${msg.role === 'user' ? '用户' : 'AI'}] ${msg.content}`
-  ).join('\n\n');
-  
-  navigator.clipboard.writeText(content)
-    .then(() => {
-      ElMessage.success('消息已复制到剪贴板');
-    })
-    .catch(() => {
-      ElMessage.error('复制失败');
-    });
-};
-
-// 监听打开消息操作的事件
-const handleOpenMessageActions = () => {
-  openMessageActions();
-};
-
-onMounted(() => {
-  // 添加事件监听器
-  window.addEventListener('open-message-actions', handleOpenMessageActions);
-});
-
-onUnmounted(() => {
-  // 移除事件监听器
-  window.removeEventListener('open-message-actions', handleOpenMessageActions);
-});
-
-watch(
-  () => route.params?.id,
-  async (_id_) => {
-    if (_id_) {
-      // 确保_id_是一个有效的字符串
-      const sessionId = typeof _id_ === 'object' ? String(_id_) : _id_;
-
-      if (sessionId !== 'not_login') {
-        // 判断的当前会话id是否有聊天记录，有缓存则直接赋值展示
-        const chatData = chatStore.chatMap[sessionId];
-        if (chatData && Array.isArray(chatData) && chatData.length > 0) {
-          bubbleItems.value = chatData as MessageItem[];
-          // 滚动到底部
-          setTimeout(() => {
-            bubbleListRef.value?.scrollToBottom();
-          }, 350);
-          return;
-        }
-
-        // 无缓存则请求聊天记录
-        await chatStore.requestChatList(sessionId);
-        // 请求聊天记录后，赋值回显，并滚动到底部
-        const newChatData = chatStore.chatMap[sessionId];
-        bubbleItems.value = (newChatData && Array.isArray(newChatData)) ? newChatData as MessageItem[] : [];
-
-        // 滚动到底部
-        setTimeout(() => {
-          bubbleListRef.value?.scrollToBottom();
-        }, 350);
-      }
-
-      // 如果本地有发送内容 ，则直接发送
-      const v = localStorage.getItem('chatContent');
-      if (v) {
-        // 发送消息
-
-        setTimeout(() => {
-          startSSE(v);
-        }, 350);
-
-        localStorage.removeItem('chatContent');
-      }
-    }
-  },
-  { immediate: true, deep: true },
-);
-
-// 处理数据块 - 利用增强的DifyRenderer处理SSE数据
-function handleDataChunk(chunk: any) {
-  if (!chunk)
-    return;
-
-  try {
-    const lastItem = bubbleItems.value[bubbleItems.value.length - 1];
-    if (!lastItem)
-      return;
-
-    // 使用增强的DifyRenderer处理数据块，支持多种格式
-    difyRenderer.handleChunk(
-      chunk,
-      (content: string, _metadata?: Record<string, any>) => {
-        if (content && content.trim().length > 0) {
-          // 处理内容事件（text_chunk, message）- 直接使用流式内容，不使用打字机效果
-          appendContent(content);
-        }
-      },
-      (workflowEventData: Record<string, any>) => {
-        // 处理工作流事件（workflow_started, node_started, node_finished, workflow_finished）
-        const workflowEvent = workflowEventData;
-
-        // 处理工作流事件数据
-
-        // DifyRenderer传递了包含event、data和message字段的完整对象
-        const eventType = workflowEvent.event || 'unknown';
-
-        // 格式化事件消息
-        const eventMessages: Record<string, string> = {
-          workflow_started: '开始理解你的语义',
-          node_started: '正在调用LLM（大模型）',
-          node_finished: '调用完毕',
-          workflow_finished: '任务完成',
-          message_end: '消息已完成',
-        };
-
-        let message = eventMessages[eventType] || eventType;
-
-        // 如果事件有自定义文本，使用自定义文本
-        if (workflowEvent.message) {
-          message = workflowEvent.message;
-        }
-        else if ((workflowEvent as any).text) {
-          message = (workflowEvent as any).text;
-        }
-
-        // 为node_started事件添加更多信息
-        if (eventType === 'node_started' && workflowEvent.data?.node_type) {
-          message = `正在调用${workflowEvent.data.node_type}（${workflowEvent.data.node_name || workflowEvent.data.node_type}）`;
-        }
-
-        // 为node_finished事件添加更多信息
-        if (eventType === 'node_finished' && workflowEvent.data?.node_name) {
-          message = `${workflowEvent.data.node_name}调用完毕`;
-        }
-
-        // 确保lastItem.workflowEvents数组存在
-        if (!lastItem.workflowEvents) {
-          lastItem.workflowEvents = [];
-        }
-
-        // 创建新的workflowEvents数组以确保响应式更新
-        const newWorkflowEvents = [...lastItem.workflowEvents];
-        newWorkflowEvents.push({
-          event: eventType,
-          type: eventType,
-          message,
-          // 使用完整的workflowEvent对象，而不仅仅是data字段
-          // 这样可以访问合并后的所有数据
-          data: workflowEvent || {},
-          dataCollapsed: true, // 默认折叠事件数据
-          // 添加唯一ID以确保每个事件都是唯一的，有助于Vue的响应式系统识别变化
-          id: Date.now() + Math.random().toString(36).substr(2, 9),
-        });
-
-        // 创建工作流事件项
-
-        // 创建完全新的消息对象以确保响应式更新
-        const updatedItem = {
-          ...lastItem,
-          workflowEvents: newWorkflowEvents,
-          // 添加版本号属性，每次更新内容时递增，确保组件重新渲染
-          eventsVersion: (lastItem.eventsVersion || 0) + 1,
-        };
-
-        // 如果是statistics事件，立即更新totalTokens和totalCost
-        if (eventType === 'statistics' && workflowEvent.data) {
-          if (workflowEvent.data.total_tokens_estimated) {
-            updatedItem.totalTokens = Number.parseInt(workflowEvent.data.total_tokens_estimated) || updatedItem.totalTokens;
-          }
-          if (workflowEvent.data.estimated_cost) {
-            updatedItem.totalCost = Number.parseFloat(workflowEvent.data.estimated_cost) || updatedItem.totalCost;
-          }
-        }
-        // 如果是workflow_finished事件，也更新token信息
-        else if (eventType === 'workflow_finished' && workflowEvent.data && workflowEvent.data.total_tokens) {
-          updatedItem.totalTokens = Number.parseInt(workflowEvent.data.total_tokens) || updatedItem.totalTokens;
-        }
-
-        // 替换整个数组以确保响应式更新
-        const newBubbleItems = [...bubbleItems.value];
-        newBubbleItems[newBubbleItems.length - 1] = updatedItem;
-        bubbleItems.value = newBubbleItems;
-
-        // 使用nextTick确保DOM能够及时更新
-        nextTick(() => {
-          // 通知BubbleList组件更新
-        });
-      },
-      () => {
-        // 流式响应完成，由DifyRenderer内部调用
-
-        finalizeMessage();
-      },
-      (error: Error) => {
-        // 处理解析错误
-        ElMessage.error(`消息解析出错：${error.message}`);
-        finalizeMessage();
-      },
-    );
-  }
-  catch (error) {
-    ElMessage.error('处理消息时出错，请稍后重试');
-  }
-}
-
-// 追加内容到消息并触发BubbleList更新
-function appendContent(content: string) {
-  const lastItem = bubbleItems.value[bubbleItems.value.length - 1];
-  if (!lastItem || !content)
-    return;
-
-  const index = bubbleItems.value.length - 1;
-
-  // 创建新对象确保响应式更新
-  const updatedItem = {
-    ...lastItem,
-    content: (lastItem.content || '') + content,
-    typing: false, // 保持typing为false，因为我们通过直接更新content来实现流式效果
-    // 添加一个版本号属性，每次更新内容时递增，确保EnhancedMarkdown组件重新渲染
-    renderVersion: (lastItem.renderVersion || 0) + 1,
-    // 确保 isMarkdown 为 true，以便使用 EnhancedMarkdown 组件渲染
-    isMarkdown: true,
-  };
-
-  // 替换整个数组以确保响应式系统检测到变化
-  const newBubbleItems = [...bubbleItems.value];
-  newBubbleItems[index] = updatedItem;
-  bubbleItems.value = newBubbleItems;
-
-  // 立即滚动到底部，确保用户实时看到内容
-  bubbleListRef.value?.scrollToBottom();
-}
-
-// 完成消息处理 - 与BubbleList组件状态同步
-function finalizeMessage() {
-  const lastItem = bubbleItems.value[bubbleItems.value.length - 1];
-  if (!lastItem)
-    return;
-
-  // 创建更新后的消息对象
-  const updatedItem = {
-    ...lastItem,
-    loading: false,
-    typing: false, // 关闭打字机效果
-  };
-
-  // 从工作流事件中解析总token和总花费，优先使用估算值
-  if (lastItem.workflowEvents && lastItem.workflowEvents.length > 0) {
-    let totalTokens = 0;
-    let totalCost = 0;
-
-    // 优先查找statistics事件中的估算token数和费用
-    const statisticsEvent = lastItem.workflowEvents.find((event: WorkflowEventItem) => event.type === 'statistics');
-    if (statisticsEvent?.data) {
-      if (statisticsEvent.data.total_tokens_estimated) {
-        totalTokens = Number.parseInt(statisticsEvent.data.total_tokens_estimated) || 0;
-      }
-      else if (statisticsEvent.data.total_tokens) {
-        totalTokens = Number.parseInt(statisticsEvent.data.total_tokens) || 0;
-      }
-
-      if (statisticsEvent.data.estimated_cost) {
-        totalCost = Number.parseFloat(statisticsEvent.data.estimated_cost) || 0;
-      }
-      else if (statisticsEvent.data.total_cost) {
-        totalCost = Number.parseFloat(statisticsEvent.data.total_cost) || 0;
-      }
-    }
-
-    // 如果statistics事件没有提供足够信息，查找workflow_finished事件
-    if (totalTokens === 0 || totalCost === 0) {
-      const finishedEvent = lastItem.workflowEvents.find((event: WorkflowEventItem) => event.type === 'workflow_finished');
-      if (finishedEvent?.data) {
-        if (totalTokens === 0) {
-          // 尝试从workflow_finished事件中获取各种可能的token值，但只取一个作为最终值
-          if (finishedEvent.data.total_tokens) {
-            totalTokens = Number.parseInt(finishedEvent.data.total_tokens) || 0;
-          }
-          else if (finishedEvent.data.usage?.total_tokens) {
-            totalTokens = Number.parseInt(finishedEvent.data.usage.total_tokens) || 0;
-          }
-          else if (finishedEvent.data.execution_metadata?.total_tokens) {
-            totalTokens = Number.parseInt(finishedEvent.data.execution_metadata.total_tokens) || 0;
-          }
-        }
-
-        if (totalCost === 0) {
-          // 尝试从workflow_finished事件中获取各种可能的费用值，但只取一个作为最终值
-          if (finishedEvent.data.total_cost) {
-            totalCost = Number.parseFloat(finishedEvent.data.total_cost) || 0;
-          }
-          else if (finishedEvent.data.cost) {
-            totalCost = Number.parseFloat(finishedEvent.data.cost) || 0;
-          }
-          else if (finishedEvent.data.usage?.total_price) {
-            totalCost = Number.parseFloat(finishedEvent.data.usage.total_price) || 0;
-          }
-          else if (finishedEvent.data.execution_metadata?.total_price) {
-            totalCost = Number.parseFloat(finishedEvent.data.execution_metadata.total_price) || 0;
-          }
-        }
-      }
-    }
-
-    // 更新项目的token和花费信息
-    if (totalTokens > 0) {
-      updatedItem.totalTokens = totalTokens;
-    }
-    if (totalCost > 0) {
-      updatedItem.totalCost = totalCost;
-    }
-  }
-
-  // 更新气泡项以触发渲染
-  const index = bubbleItems.value.length - 1;
-  bubbleItems.value[index] = updatedItem;
-  isThinking.value = false;
-
-  // 对话完成后自动折叠工作事件流
-  if (lastItem.workflowEvents && lastItem.workflowEvents.length > 0) {
-    // 使用nextTick确保DOM更新完成后再折叠
-    nextTick(() => {
-      const currentItems = bubbleItems.value;
-      const currentIndex = currentItems.findIndex((i: MessageItem) => i.key === lastItem.key);
-      if (currentIndex !== -1) {
-        // 创建新数组和新对象确保响应式系统检测到变化
-        const updatedItems = [...currentItems];
-        updatedItems[currentIndex] = {
-          ...updatedItems[currentIndex],
-          workflowEventsCollapsed: true, // 自动折叠工作事件流
-        };
-        bubbleItems.value = updatedItems;
-
-        // 工作事件流已自动折叠
-      }
-    });
-  }
-
-  // 最终滚动到底部，确保用户看到完整消息
-  nextTick(() => {
-    bubbleListRef.value?.scrollToBottom();
-    // 添加延时检查，确保DOM更新后数据仍然存在
-    setTimeout(() => {
-
-    }, 100);
-  });
-
-  // 同步到存储，保持状态一致性
-  syncToChatStore();
-  // 消息发送完成后刷新会话列表，确保按更新时间排序
-  refreshSessionList();
-}
-
-// 封装错误处理逻辑 - 确保错误信息也由AI回复显示
-function handleError(err: any) {
-
-  // 获取错误消息
-  let errorMessage = '发送消息失败，请稍后重试';
-  if (err?.message?.includes('会话不存在') || err?.msg?.includes('会话不存在')) {
-    errorMessage = '当前会话不存在，请刷新页面或创建新会话';
-    // 可以选择清空当前会话ID，让用户重新开始
-    if (route.params?.id !== 'not_login') {
-      // 可以在这里添加创建新会话的逻辑
-    }
-  }
-  else if (err?.message) {
-    errorMessage = err.message;
-  }
-
-  // 显示错误提示
-  ElMessage.error(errorMessage);
-
-  // 将错误信息作为AI的回复显示在聊天界面中
-  const lastItem = bubbleItems.value[bubbleItems.value.length - 1];
-  if (lastItem && lastItem.role !== 'user') {
-    // 更新最后一条AI消息为错误信息
-    const index = bubbleItems.value.length - 1;
-    bubbleItems.value[index] = {
-      ...lastItem,
-      content: `⚠️ ${errorMessage}`,
-      loading: false,
-      typing: false,
-    };
-  }
-  else {
-    // 如果没有最近的AI消息，则添加一条新的错误消息
-    addMessage(`⚠️ ${errorMessage}`, false);
-  }
-
-  // 确保消息处于完成状态
-  finalizeMessage();
-}
-
-async function startSSE(chatContent: string) {
-  try {
-    // 检查会话ID是否有效
-    const currentSessionId = route.params?.id !== 'not_login' ? String(route.params?.id) : undefined;
-
-    // 检查智能体ID是否有效 - agent_id是必需参数
-    const agentId = agentStore.currentAgentInfo?.id; // 修复属性名：agentId -> id
-    if (!agentId) {
-      ElMessage.error('请先选择一个AI助手');
-      return;
-    }
-
-    // 添加用户输入的消息
-    inputValue.value = '';
-    addMessage(chatContent, true);
-    addMessage('', false);
-
-    // 滚动到底部
-    bubbleListRef.value?.scrollToBottom();
-
-    // 构建消息列表，包含完整的对话历史
-    const userMessages = bubbleItems.value
-      ?.filter((item: any) => item?.content && (item?.role === 'user' || item?.role === 'system'))
-      ?.map((item: any) => ({
-        role: item.role === 'system' ? 'assistant' : item.role,
-        content: item.content,
-      })) || [];
-
-    // 如果没有任何消息，不发送请求
-    if (userMessages.length === 0) {
-      ElMessage.warning('请输入消息内容');
-      return;
-    }
-
-    // 构建后端期望的ChatRequest参数格式
-    // 从userMessages中提取最后一个用户消息作为query
-    const lastUserMessage = userMessages.findLast(msg => msg.role === 'user')?.content || userMessages[userMessages.length - 1]?.content || '';
-
-    // 确保query字段不为空，否则使用当前输入的内容
-    const finalQuery = lastUserMessage.trim() || chatContent.trim();
-
-    // 添加文件引用到用户消息中（如果存在）
-    let messageWithFiles = finalQuery;
-    if (filesStore.filesList.length > 0) {
-      messageWithFiles += "\n\n📁 已上传的文件:\n" + filesStore.filesList.map((file: FilesCardProps & { file: File }, index) => 
-        `${index + 1}. ${file.name} (${file.uid})`
-      ).join("\n") + "\n";
-      
-      // 清空文件列表
-      filesStore.setFilesList([]);
-    }
-
-    if (!finalQuery) {
-      ElMessage.warning('请输入消息内容');
-      return;
-    }
-
-    const sendData = {
-      query: messageWithFiles, // 使用包含文件引用的消息
-      user_id: userStore.userInfo?.user_id, // 用户ID - 直接使用，后端会验证
-      merchant_id: userStore.userInfo?.merchant_id, // 商户ID - 直接使用，后端会验证
-      agent_id: agentId || 0, // 智能体ID - 修复：使用正确的agent_id而不是路由参数
-      conversation_id: currentSessionId && currentSessionId !== 'not_login' ? String(currentSessionId) : undefined, // 会话ID
-    };
-
-    // 构建后端期望的参数
-
-    try {
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || '/api'}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${userStore.token}`,
-        },
-        body: JSON.stringify(sendData),
-      });
-
-      if (!response.ok) {
-        throw new Error('请求失败');
-      }
-
-      // 根据stream参数决定处理方式
-      // 注意：后端现在根据智能体配置决定是否返回流式响应
-      // 我们需要检查响应的Content-Type来决定如何处理
-      const contentType = response.headers.get('Content-Type') || '';
-
-      if (contentType.includes('text/event-stream')) {
-        // 流式响应处理
-        if (!response.body) {
-          throw new Error('SSE连接失败');
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-
-        // 重置DifyRenderer状态
-        difyRenderer.reset();
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            // 通知DifyRenderer流已结束
-            difyRenderer.notifyEnd();
-            break;
-          }
-
-          // 立即处理每个数据块，避免buffer累积
-          const chunkData = decoder.decode(value, { stream: true });
-
-          // 将原始数据块传递给handleDataChunk，让DifyRenderer内部处理SSE格式
-          handleDataChunk(chunkData);
-        }
-      }
-      else {
-        // 非流式响应处理
-        const data = await response.json();
-
-        // 处理非流式响应
-        if (data.message) {
-          // 更新最后一条消息的内容
-          const lastItem = bubbleItems.value[bubbleItems.value.length - 1];
-          if (lastItem) {
-            const updatedItem = {
-              ...lastItem,
-              content: data.message,
-              loading: false,
-              typing: false,
-            };
-
-            // 替换整个数组以确保响应式更新
-            const newBubbleItems = [...bubbleItems.value];
-            newBubbleItems[newBubbleItems.length - 1] = updatedItem;
-            bubbleItems.value = newBubbleItems;
-          }
-        }
-
-        // 处理工作流事件（如果有）
-        if (data.workflow_events && Array.isArray(data.workflow_events)) {
-          const lastItem = bubbleItems.value[bubbleItems.value.length - 1];
-          if (lastItem) {
-            const updatedItem = {
-              ...lastItem,
-              workflowEvents: data.workflow_events.map((event: any) => ({
-                type: event.event || 'unknown',
-                message: event.answer || event.content || event.text || '',
-                data: event,
-                dataCollapsed: true,
-              })),
-            };
-
-            // 替换整个数组以确保响应式更新
-            const newBubbleItems = [...bubbleItems.value];
-            newBubbleItems[newBubbleItems.length - 1] = updatedItem;
-            bubbleItems.value = newBubbleItems;
-          }
-        }
-
-        // 处理token统计信息（如果有）
-        if (data.total_tokens_estimated !== undefined || data.estimated_cost !== undefined) {
-          const lastItem = bubbleItems.value[bubbleItems.value.length - 1];
-          if (lastItem) {
-            const updatedItem = {
-              ...lastItem,
-              totalTokens: data.total_tokens_estimated || 0,
-              totalCost: data.estimated_cost || 0,
-            };
-
-            // 替换整个数组以确保响应式更新
-            const newBubbleItems = [...bubbleItems.value];
-            newBubbleItems[newBubbleItems.length - 1] = updatedItem;
-            bubbleItems.value = newBubbleItems;
-          }
-        }
-      }
-    }
-    catch (error) {
-      handleError(error);
-    }
-  }
-  catch (err) {
-    handleError(err);
-  }
-  finally {
-    // 确保消息完成状态 - 使用统一的finalizeMessage处理
-    finalizeMessage();
-  }
-}
-
-// 中断请求
-async function cancelSSE() {
-  cancel();
-  // 使用统一的完成处理
-  finalizeMessage();
-}
-
-// 添加消息 - 维护聊天记录，确保与BubbleList组件兼容 - 改进组件引用访问
-function addMessage(message: string, isUser: boolean) {
-  // 确保bubbleItems.value是数组
-  if (!Array.isArray(bubbleItems.value)) {
-    bubbleItems.value = [];
-  }
-
-  const i = bubbleItems.value.length;
-  const obj: MessageItem = {
-    key: i,
-    avatar: isUser
-      ? avatar.value
-      : new URL('@/assets/images/logo.png', import.meta.url).href,
-    avatarSize: '32px',
-    role: isUser ? 'user' : 'agent',
-    placement: isUser ? 'end' : 'start',
-    isMarkdown: !isUser, // 确保 AI 消息使用 Markdown 渲染
-    loading: false, // 移除Loading状态，避免阻塞数据流更新
-    content: message || '',
-    reasoning_content: '',
-    thinkingStatus: 'start',
-    thinkingCollapse: false, // 修复拼写错误: thinlCollapse -> thinkingCollapse
-    // 初始化工作流事件数组
-    workflowEvents: [],
-    // 默认展开工作流事件
-    workflowEventsCollapsed: false,
-    // 移除打字机效果，直接显示流式内容
-    typing: false,
-    // 添加消息时间戳
-    timestamp: new Date().toLocaleTimeString('zh-CN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    }),
-    // 如果是用户消息，添加当前的文件列表
-    files: isUser ? [...filesStore.filesList] : [],
-  };
-
-  // 避免直接修改数组，使用新数组确保响应式更新
-  const newBubbleItems = [...bubbleItems.value, obj];
-  bubbleItems.value = newBubbleItems;
-
-  // 确保BubbleList立即响应新消息
-  nextTick(() => {
-    if (bubbleListRef.value) {
-      bubbleListRef.value.scrollToBottom();
-    }
-  });
-
-  // 同步到chatStore
-  syncToChatStore();
-}
-
-// 同步消息到chatStore
-function syncToChatStore() {
-  const currentSessionId = route.params?.id;
-  if (currentSessionId && currentSessionId !== 'not_login') {
-    chatStore.chatMap[String(currentSessionId)] = [...bubbleItems.value].map((item) => {
-      // 从workflowEvents中提取估算token数，确保保存的是估算值而不是解析值
-      let estimatedTokens = item.totalTokens || 0;
-      let estimatedCost = item.totalCost || 0;
-
-      // 如果有workflowEvents，优先使用其中的估算数据
-      if (item.workflowEvents && Array.isArray(item.workflowEvents)) {
-        // 查找statistics事件
-        const statisticsEvent = item.workflowEvents.find((event: any) =>
-          event.type === 'statistics' || (event.data && event.data.event === 'statistics'),
-        )?.data;
-
-        // 查找workflow_finished事件
-        const finishedEvent = item.workflowEvents.find((event: any) =>
-          event.type === 'workflow_finished' || (event.data && event.data.event === 'workflow_finished'),
-        )?.data;
-
-        // 优先使用statistics事件中的估算数据
-        if (statisticsEvent) {
-          if (statisticsEvent.total_tokens_estimated) {
-            estimatedTokens = Number.parseInt(statisticsEvent.total_tokens_estimated) || estimatedTokens;
-          }
-          if (statisticsEvent.estimated_cost) {
-            estimatedCost = Number.parseFloat(statisticsEvent.estimated_cost) || estimatedCost;
-          }
-        }
-        // 其次使用workflow_finished事件中的数据
-        else if (finishedEvent) {
-          if (finishedEvent.total_tokens) {
-            estimatedTokens = Number.parseInt(finishedEvent.total_tokens) || estimatedTokens;
-          }
-        }
-      }
-
-      return {
-        key: item.key,
-        role: item.role,
-        placement: item.placement || (item.role === 'user' ? 'end' : 'start'),
-        isMarkdown: item.isMarkdown !== undefined ? item.isMarkdown : (item.role !== 'user'),
-        avatar: item.avatar,
-        avatarSize: item.avatarSize || '32px',
-        typing: item.typing || false,
-        reasoning_content: item.reasoning_content || '',
-        thinkingStatus: item.thinkingStatus || 'end',
-        content: item.content || '',
-        thinkCollapse: item.thinkCollapse || false,
-        workflow_events: item.workflowEvents || [], // 正确映射属性名
-        files: item.files || [],
-        totalTokens: estimatedTokens,
-        totalCost: estimatedCost,
-        timestamp: item.timestamp || '',
-      };
-    });
-  }
-}
-
-// 刷新会话列表，更新当前会话的更新时间
-async function refreshSessionList() {
-  const currentSessionId = route.params?.id;
-  if (currentSessionId && currentSessionId !== 'not_login') {
-    try {
-      // 查找当前会话在会话列表中的信息
-      const currentSession = sessionStore.sessionList.find(
-        (session: any) => session.id === currentSessionId,
-      );
-
-      if (currentSession) {
-        // 更新会话的updated_at时间为当前时间
-        // 只传递后端API需要的字段，避免422错误
-        const updatedSession = {
-          id: currentSession.id,
-          title: currentSession.title || '',
-          user_id: currentSession.user_id,
-          agent_id: currentSession.agent_id || 0,
-          merchant_id: currentSession.merchant_id,
-          status: currentSession.status || 'active',
-        };
-
-        // 调用会话存储的updateSession方法更新会话
-        await sessionStore.updateSession(updatedSession);
-      }
-      else {
-        // 如果当前会话不在列表中，刷新第一页数据
-        await sessionStore.requestSessionList(1, true);
-      }
-    }
-    catch (error) {
-      // 刷新会话列表失败处理
-    }
-  }
-}
-
-// 展开收起 事件展示 - 添加实际实现以避免事件处理问题
-function handleChange(value: { value: boolean; status: ThinkingStatus }) {
-  // 实际处理逻辑，可以为空但不能只有注释
-  // value参数需要被使用，以避免编译警告
-  if (value) {
-    // 可以在这里添加实际的展开/收起逻辑
-  }
-}
-
-// 切换单个事件数据的展开/折叠状态 - 添加null检查并改进更新逻辑
-function toggleEventData(item: MessageItem, eventIndex: number) {
-  if (!item || !item.key) {
-    return;
-  }
-
-  nextTick(() => {
-    const index = bubbleItems.value.findIndex((i: MessageItem) => i.key === item.key);
-    if (index !== -1 && bubbleItems.value[index] && bubbleItems.value[index].workflowEvents && bubbleItems.value[index].workflowEvents[eventIndex]) {
-      // 创建新对象以确保响应式系统检测到变化
-      const updatedItem = {
-        ...bubbleItems.value[index],
-        workflowEvents: [...bubbleItems.value[index].workflowEvents],
-      };
-
-      // 切换数据折叠状态
-      updatedItem.workflowEvents[eventIndex] = {
-        ...updatedItem.workflowEvents[eventIndex],
-        dataCollapsed: !updatedItem.workflowEvents[eventIndex].dataCollapsed,
-      };
-
-      // 替换整个数组以确保响应式更新
-      const newBubbleItems = [...bubbleItems.value];
-      newBubbleItems[index] = updatedItem;
-      bubbleItems.value = newBubbleItems;
-    }
-  });
-}
-
-// 切换整个工作流事件区域的展开/折叠状态
-function toggleWorkflowEvents(item: MessageItem) {
-  const currentItems = bubbleItems.value;
-  const index = currentItems.findIndex((i: MessageItem) => i.key === item.key);
-  if (index !== -1) {
-    // 创建新数组和新对象确保响应式系统检测到变化
-    const updatedItems = [...currentItems];
-    updatedItems[index] = {
-      ...updatedItems[index],
-      workflowEventsCollapsed: !updatedItems[index].workflowEventsCollapsed,
-    };
-    bubbleItems.value = updatedItems;
-  }
-}
-
-// BubbleList组件的更新钩子，确保数据更新时触发组件渲染
-function handleBubbleListUpdate() {
-  // 当数据更新时，可以执行额外的逻辑
-
-  // 滚动到底部，确保用户看到最新内容
-  bubbleListRef.value?.scrollToBottom();
-}
-
-function handleDeleteCard(_item: FilesCardProps, index: number) {
-  filesStore.deleteFileByIndex(index);
-}
-
-watch(
-  () => filesStore.filesList.length,
-  (val) => {
-    if (val > 0) {
-      nextTick(() => {
-        if (senderRef.value) {
-          senderRef.value.openHeader();
-        }
-      });
-    }
-    else {
-      nextTick(() => {
-        if (senderRef.value) {
-          senderRef.value.closeHeader();
-        }
-      });
-    }
-  },
-);
-
-</script>
-
 <template>
-  <div class="chat-with-id-container">
-    <!-- 消息操作抽屉 -->
-    <el-drawer
-      v-model="messageActionsDrawer"
-      title="消息操作"
-      direction="rtl"
-      size="50%"
+  <div 
+    v-if="thinkingContent || (toolCalls && toolCalls.length > 0)"
+    class="thinking-process-container"
+  >
+    <div 
+      class="events-header" 
+      @click="toggleThinkingProcess"
     >
-      <MessageActions 
-        :messages="bubbleItems.map((item, index) => ({
-          id: item.key || index,
-          role: item.role as 'user' | 'agent',
-          content: item.content || '',
-          created_at: item.timestamp || new Date().toISOString()
-        }))"
-        @save="handleSaveMessages"
-        @share="handleShareMessages"
-      />
-    </el-drawer>
-    
-    <div class="chat-warp">
-      <!-- 使用自定义容器包装BubbleList，确保工作流事件能够正确布局 -->
-      <div class="bubble-list-wrapper">
-        <BubbleList
-          ref="bubbleListRef" :list="bubbleItems as BubbleListItemProps[]" max-height="calc(100vh - 240px)"
-          @update:list="handleBubbleListUpdate"
-        >
-          <template #header="{ item }">
-            <ThinkingProcess
-              v-if="(item as MessageItem).reasoning_content" 
-              :thinking-content="(item as MessageItem).reasoning_content || ''"
-            />
-          </template>
-
-          <template #content="{ item }">
-            <!-- chat 内容走增强版 markdown，支持图表渲染 -->
-            <EnhancedMarkdown
-              v-if="(item as MessageItem).content && (item as MessageItem).role === 'agent'" 
-              :key="(item as MessageItem).renderVersion || (item as MessageItem).key"
-              :markdown="(item as MessageItem).content || ''"
-              class="chat-content" 
-              :themes="{ light: 'github-light', dark: 'github-dark' }"
-              default-theme-mode="dark"
-            />
-            <!-- user 内容 纯文本 -->
-            <div v-if="(item as MessageItem).content && (item as MessageItem).role === 'user'" class="user-content" v-html="(item as MessageItem).content?.replace(/\n/g, '<br>')">
-            </div>
-
-            <!-- 用户消息中的文件引用 -->
-            <div v-if="(item as MessageItem).role === 'user' && (item as MessageItem).files && (item as MessageItem).files!.length > 0" class="user-files-reference">
-              <div class="files-title">📁 引用的文件:</div>
-              <div v-for="(file, index) in (item as MessageItem).files" :key="index" class="file-item">
-                {{ index + 1 }}. {{ file.name || file.filename || file.title || '未知文件' }}
-              </div>
-            </div>
-
-            <!-- 将工作流事件移动到content模板中，确保它们能够正确显示在消息下方 -->
-            <!-- 工作流事件展示区域 -->
-            <div v-if="(item as MessageItem).workflowEvents && (item as MessageItem).workflowEvents!.length > 0" class="workflow-events-container">
-              <div class="workflow-events-toggle" @click="toggleWorkflowEvents(item as MessageItem)">
-                <span class="workflow-events-label">
-                  {{ (item as MessageItem).workflowEventsCollapsed ? '▼' : '▲' }} 工作流事件 ({{ (item as MessageItem).workflowEvents!.length }})
-                </span>
-              </div>
-
-              <div v-if="!(item as MessageItem).workflowEventsCollapsed" class="workflow-events-content">
-                <div v-for="(event, index) in (item as MessageItem).workflowEvents" :key="index" class="workflow-event-item">
-                  <div class="event-header">
-                    <span class="event-type">{{ event.type || event.event }}:</span>
-                    <span class="event-message">{{ event.message }}</span>
-                    <span
-                      v-if="event.data && Object.keys(event.data).length > 0" class="event-data-toggle"
-                      @click.stop="toggleEventData(item as MessageItem, index)"
-                    >
-                      {{ event.dataCollapsed ? '▼' : '▲' }}
-                    </span>
-                  </div>
-                  <div v-if="event.data && Object.keys(event.data).length > 0 && !event.dataCollapsed" class="event-data">
-                    {{ JSON.stringify(event.data, null, 2) }}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- 显示token和花费统计信息 -->
-            <div v-if="(((item as MessageItem).totalTokens || 0) > 0 || ((item as MessageItem).totalCost || 0) > 0) && (item as MessageItem).role === 'agent'" class="token-cost-info">
-              <span v-if="(item as MessageItem).totalTokens" class="token-count">
-                📊 Token: {{ (item as MessageItem).totalTokens }}
-              </span>
-              <span v-if="(item as MessageItem).totalCost" class="cost-amount">
-                💰 花费: ¥{{ Number((item as MessageItem).totalCost).toFixed(4) }}
-              </span>
-              <span v-if="(item as MessageItem).timestamp" class="message-time">
-                ⏰ 时间: {{ (item as MessageItem).timestamp }}
-              </span>
-            </div>
-            <!-- 对于用户消息和没有统计数据的系统消息，单独显示时间 -->
-            <div v-else-if="(item as MessageItem).timestamp" class="message-time-only">
-              ⏰ 时间: {{ (item as MessageItem).timestamp }}
-            </div>
-          </template>
-        </BubbleList>
-      </div>
-
-      <Sender
-        ref="senderRef" v-model="inputValue" class="chat-defaul-sender" :auto-size="{
-          maxRows: 6,
-          minRows: 2,
-        }" variant="updown" clearable allow-speech :loading="isLoading" @submit="startSSE" @cancel="cancelSSE"
-      >
-        <template #header>
-          <div class="sender-header p-12px pt-6px pb-0px">
-            <Attachments :items="filesStore.filesList as any" :hide-upload="true" @delete-card="handleDeleteCard">
-              <template #prev-button="{ show, onScrollLeft }">
-                <div
-                  v-if="show"
-                  class="prev-next-btn left-8px flex-center w-22px h-22px rounded-8px border-1px border-solid border-[rgba(0,0,0,0.08)] c-[rgba(0,0,0,.4)] hover:bg-#f3f4f6 bg-#fff font-size-10px"
-                  @click="onScrollLeft"
-                >
-                  <el-icon>
-                    <ArrowLeftBold />
-                  </el-icon>
-                </div>
-              </template>
-
-              <template #next-button="{ show, onScrollRight }">
-                <div
-                  v-if="show"
-                  class="prev-next-btn right-8px flex-center w-22px h-22px rounded-8px border-1px border-solid border-[rgba(0,0,0,0.08)] c-[rgba(0,0,0,.4)] hover:bg-#f3f4f6 bg-#fff font-size-10px"
-                  @click="onScrollRight"
-                >
-                  <el-icon>
-                    <ArrowRightBold />
-                  </el-icon>
-                </div>
-              </template>
-            </Attachments>
-          </div>
-        </template>
-        <template #prefix>
-          <div class="flex items-center gap-8px flex-none">
-            <FilesSelect />
-            <AgentSelect />
-          </div>
-        </template>
-      </Sender>
+      <el-icon class="events-icon"><Collection /></el-icon>
+      <span class="events-title">AI 思考过程</span>
+      <el-tag type="info" size="small" class="events-tag">点击展开/收起</el-tag>
+      <el-icon class="collapse-icon" :class="{ 'is-collapsed': thinkingProcessCollapsed }">
+        <ArrowDown />
+      </el-icon>
     </div>
+    
+    <transition name="slideFade">
+      <div v-show="!thinkingProcessCollapsed" class="events-list">
+        <div class="event-item event-thinking">
+          <div class="event-header" @click="toggleThinkingDetail">
+            <el-icon class="event-icon">
+              <InfoFilled />
+            </el-icon>
+            <span class="event-type">思考过程</span>
+            <el-icon class="event-collapse-icon" :class="{ 'is-collapsed': thinkingDetailCollapsed }">
+              <ArrowDown />
+            </el-icon>
+          </div>
+          <div v-if="thinkingContent" class="event-message" :class="{ 'is-collapsed': thinkingDetailCollapsed }">
+            {{ thinkingContent }}
+          </div>
+        </div>
+        
+        <!-- 工具调用信息 -->
+        <div 
+          v-for="(toolCall, index) in toolCalls" 
+          :key="`${toolCall.name}-${JSON.stringify(toolCall.input).slice(0, 50)}`"
+          class="event-item event-tool-call"
+        >
+          <div class="event-header" @click="toggleToolCallDetail(index)">
+            <el-icon class="event-icon">
+              <component :is="getToolCallIcon(toolCall)" />
+            </el-icon>
+            <span class="event-type">使用工具 {{ getToolCallType(toolCall) }}</span>
+            <el-icon class="event-collapse-icon" :class="{ 'is-collapsed': toolCallCollapsed[index] }">
+              <ArrowDown />
+            </el-icon>
+          </div>
+          <div class="event-raw-data" :class="{ 'is-collapsed': toolCallCollapsed[index] }">
+            <div class="tool-section">
+              <div class="tool-section-title">请求:</div>
+              <pre>{{ formatToolCallData(toolCall.input) }}</pre>
+            </div>
+            <div v-if="toolCall.observation" class="tool-section">
+              <div class="tool-section-title">响应:</div>
+              <pre>{{ toolCall.observation }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 
-<style scoped lang="scss">
-.chat-with-id-container {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    height: 100%;
+<script setup lang="ts">
+import { ref, watch, computed } from 'vue'
+import { 
+  Collection, 
+  ArrowDown,
+  InfoFilled,
+  Tools
+} from '@element-plus/icons-vue'
 
-  /* 聊天区域满宽 */
-  .chat-warp {
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    width: 100%;
-    height: calc(100vh - 60px);
-    
-    .thinking-chain-warp {
-      margin-bottom: 12px;
-    }
-    
-    // 新增包装器样式
-    .bubble-list-wrapper {
-      width: 80%;
-      display: flex;
-      flex-direction: column;
-      max-width: none;
-      margin-left: auto;
-      margin-right: auto;
-    }
-    
-    /* 文件引用样式 - 优化为列表样式 */
-    .attachments {
-      margin-bottom: 16px;
-      width: 100%;
-    }
-    
-    .attachments-list {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      width: 100%;
-    }
-    
-    .attachment-item {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 16px 20px;
-      background: linear-gradient(135deg, #f8fafc, #f1f5f9);
-      border: 1px solid #e2e8f0;
-      border-radius: 12px;
-      transition: all 0.3s ease;
-      cursor: pointer;
-    }
-    
-    .attachment-item:hover {
-      background: linear-gradient(135deg, #f1f5f9, #e2e8f0);
-      border-color: #cbd5e0;
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-    }
-    
-    .attachment-icon {
-      width: 40px;
-      height: 40px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background-color: #4299e1;
-      color: white;
-      border-radius: 8px;
-      flex-shrink: 0;
-    }
-    
-    .attachment-info {
-      flex: 1;
-      min-width: 0;
-    }
-    
-    .attachment-name {
-      font-size: 15px;
-      font-weight: 600;
-      color: #2d3748;
-      margin-bottom: 4px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    
-    .attachment-details {
-      display: flex;
-      gap: 16px;
-      font-size: 13px;
-      color: #718096;
-    }
-    
-    .attachment-size {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    
-    .attachment-status {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
-    
-    .attachment-actions {
-      display: flex;
-      gap: 8px;
-      flex-shrink: 0;
-    }
-      
+const props = defineProps<{
+  thinkingContent?: string | object | Array<any>
+  toolInfoList?: Array<{
+    name: string
+    input: string
+    observation: string
+  }>
+}>()
 
-    
-    .attachment-action-btn {
-      width: 32px;
-      height: 32px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 6px;
-      color: #718096;
-      background-color: #edf2f7;
-      transition: all 0.2s ease;
+// AI思考过程相关状态
+const thinkingProcessCollapsed = ref(false)
+const thinkingDetailCollapsed = ref(false)
+// 工具调用数组
+const toolCalls = ref<any[]>([])
+
+// 工具调用折叠状态数组，默认为true（折叠）
+const toolCallCollapsed = ref<Array<boolean>>([])
+
+// 初始化时确保所有现有的工具调用都是折叠状态
+const initializeToolCallCollapsed = () => {
+  if (toolCalls.value.length > 0) {
+    // 确保toolCallCollapsed数组长度与toolCalls一致
+    while (toolCallCollapsed.value.length < toolCalls.value.length) {
+      toolCallCollapsed.value.push(true); // 默认折叠
+    }
+    // 对于超出的部分，保持原状态
+    if (toolCallCollapsed.value.length > toolCalls.value.length) {
+      toolCallCollapsed.value.splice(toolCalls.value.length);
+    }
+  } else {
+    // 如果没有工具调用，清空折叠状态数组
+    toolCallCollapsed.value = [];
+  }
+};
+
+// 立即执行一次初始化
+initializeToolCallCollapsed();
+
+// 安全地解析JSON字符串，处理各种边缘情况
+const safelyParseJSON = (data: any): any => {
+  if (data === null || data === undefined) {
+    return 'null';
+  }
+  
+  if (typeof data === 'object') {
+    return data;
+  }
+  
+  if (typeof data === 'string') {
+    // 检查字符串是否看起来像JSON
+    if ((data.startsWith('{') && data.endsWith('}')) ||
+        (data.startsWith('[') && data.endsWith(']'))) {
+      try {
+        return JSON.parse(data);
+      } catch (e) {
+        // 解析失败时，返回原始字符串并添加提示
+        return `[可能不是有效JSON] ${data}`;
+      }
     }
     
-    .attachment-action-btn:hover {
-      background-color: #e2e8f0;
-      color: #2d3748;
+    // 如果是包含JSON的字符串，但有额外内容，尝试提取JSON部分
+    try {
+      // 尝试找到第一个{和最后一个}，提取JSON部分
+      const firstBrace = data.indexOf('{');
+      const lastBrace = data.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && firstBrace < lastBrace) {
+        const potentialJson = data.substring(firstBrace, lastBrace + 1);
+        return JSON.parse(potentialJson);
+      }
+    } catch (e) {
+      // 如果尝试提取失败，继续使用原始数据
     }
   }
   
-  .chat-defaul-sender {
-    width: 80%;
-    margin-bottom: 28px;
-    padding: 0 24px;
-    margin-left: 12px;
-    margin-right: 12px;
+  // 其他情况直接返回
+  return data;
+};
+
+// 从thinkingContent文本中提取工具调用信息
+const extractToolCallsFromText = (text: string): any[] => {
+  const toolCalls: any[] = [];
+  if (!text) return toolCalls;
+  
+  // 匹配[工具调用: tool_name]格式的文本
+  const toolCallRegex = /\[工具调用:\s*([^\]]+)\]\s*参数:\s*([\s\S]*?)(?=\n\n\[工具调用:|\n\[|$)/g;
+  let match;
+  
+  while ((match = toolCallRegex.exec(text)) !== null) {
+    const toolName = match[1].trim();
+    const paramsText = match[2].trim();
+    
+    try {
+      // 尝试解析参数为JSON
+      let params = safelyParseJSON(paramsText);
+      
+      // 如果解析后的参数是字符串，再次尝试解析
+      if (typeof params === 'string') {
+        params = safelyParseJSON(params);
+      }
+      
+      // 创建工具调用对象
+      const toolCall = {
+        name: toolName || '未命名工具',
+        input: params,
+        observation: ''
+      };
+      
+      toolCalls.push(toolCall);
+    } catch (e) {
+      // 如果解析失败，使用原始参数文本
+      toolCalls.push({
+        name: toolName || '未命名工具',
+        input: paramsText,
+        observation: ''
+      });
+    }
+  }
+  
+  return toolCalls;
+};
+
+// 监听toolInfoList变化
+watch(() => props.toolInfoList, (newToolInfoList) => {
+  // 无论新数据是否有效，都进行处理，确保历史数据和实时数据格式一致
+  if (newToolInfoList && Array.isArray(newToolInfoList) && newToolInfoList.length > 0) {
+    // 清空并重新构建工具调用数组，确保数据格式一致
+    const newToolCalls: any[] = [];
+    
+    // 处理每一个工具调用
+    newToolInfoList.forEach(toolInfo => {
+      if (toolInfo) {
+        // 安全地处理工具调用数据，避免解析错误
+        const toolCall = {
+          name: toolInfo.name || '未命名工具',
+          input: safelyParseJSON(toolInfo.input),
+          observation: safelyParseJSON(toolInfo.observation)
+        };
+        
+        // 添加新的工具调用到临时数组中
+        newToolCalls.push(toolCall);
+      }
+    });
+    
+    // 更新toolCalls，确保数据完全同步
+    toolCalls.value = newToolCalls;
+    // 确保所有工具调用的折叠状态都正确初始化
+    initializeToolCallCollapsed();
+  } else if (!props.thinkingContent || (!toolCalls.value || toolCalls.value.length === 0)) {
+    // 只有当thinkingContent不存在且toolCalls为空时，才清空工具调用数组
+    // 这样可以避免与thinkingContent监听器冲突
+    toolCalls.value = [];
+    toolCallCollapsed.value = [];
+  }
+}, { immediate: true })
+
+// 监听thinkingContent变化，从文本中提取工具调用信息作为备用
+watch(() => props.thinkingContent, (newThinkingContent) => {
+  // 只有当toolInfoList不存在、不是数组或为空数组，并且toolCalls数组为空时，才从thinkingContent中提取工具调用信息
+  // 这样可以避免同时从toolInfoList和thinkingContent提取导致的重复显示
+  // 对于agent_thought事件列表，我们需要特殊处理以避免重复显示
+  if ((!props.toolInfoList || !Array.isArray(props.toolInfoList) || props.toolInfoList.length === 0) && (!toolCalls.value || toolCalls.value.length === 0)) {
+    // 处理JSON格式的thinkingContent
+    if (typeof newThinkingContent === 'object' && newThinkingContent !== null) {
+      // 从JSON对象中提取工具调用信息
+      if (Array.isArray(newThinkingContent)) {
+        // 检查是否是agent_thought事件列表
+        const isAgentThoughtList = newThinkingContent.some((item: any) => 
+          item.event === 'agent_thought' && (item.tool || item.tool_input)
+        );
+        
+        if (isAgentThoughtList) {
+          // 专门处理agent_thought事件列表
+          // 1. 过滤有效的工具调用，只包含有observation的完整工具调用
+          // 2. 或者如果没有observation，确保不与后续可能的完整调用重复
+          const hasCompleteToolCalls = newThinkingContent.some((item: any) => 
+            item.tool && item.tool !== '' && item.observation && item.observation !== ''
+          );
+          
+          const filteredItems = hasCompleteToolCalls
+            // 如果有完整的工具调用，只使用那些有observation的
+            ? newThinkingContent.filter((item: any) => 
+                item.tool && item.tool !== '' && item.observation && item.observation !== ''
+              )
+            // 否则使用所有有效工具调用
+            : newThinkingContent.filter((item: any) => item.tool && item.tool !== '');
+          
+          const extractedToolCalls = filteredItems.map((item: any) => ({
+            name: item.tool, // 使用tool字段作为工具名称
+            input: safelyParseJSON(item.tool_input) || item.tool_input, // 解析tool_input
+            observation: safelyParseJSON(item.observation) || item.observation || '' // 解析observation
+          }));
+          
+          if (extractedToolCalls.length > 0) {
+            toolCalls.value = extractedToolCalls;
+            initializeToolCallCollapsed();
+            return;
+          }
+        }
+        
+        // 如果不是agent_thought列表，尝试常规的工具调用数组处理
+        const extractedToolCalls = newThinkingContent.map((call: any) => ({
+          name: call.name || call.tool_name || '未命名工具',
+          input: call.input || call.parameters || '',
+          observation: call.observation || ''
+        }));
+        if (extractedToolCalls.length > 0) {
+          toolCalls.value = extractedToolCalls;
+          initializeToolCallCollapsed();
+        }
+      } else {
+        // 类型断言，告诉TypeScript这个对象有tool_calls属性
+        const thinkingContentWithToolCalls = newThinkingContent as { tool_calls?: any[] };
+        if (thinkingContentWithToolCalls.tool_calls && Array.isArray(thinkingContentWithToolCalls.tool_calls)) {
+          // 从tool_calls字段提取工具调用
+          const extractedToolCalls = thinkingContentWithToolCalls.tool_calls.map((call: any) => ({
+            name: call.name || call.tool_name || '未命名工具',
+            input: call.input || call.parameters || '',
+            observation: call.observation || ''
+          }));
+          if (extractedToolCalls.length > 0) {
+            toolCalls.value = extractedToolCalls;
+            initializeToolCallCollapsed();
+          }
+        }
+      }
+    } else {
+      // 从thinkingContent文本中提取工具调用信息
+      const extractedToolCalls = extractToolCallsFromText(newThinkingContent || '');
+      if (extractedToolCalls.length > 0) {
+        toolCalls.value = extractedToolCalls;
+        initializeToolCallCollapsed();
+      }
+    }
+  }
+}, { immediate: true })
+
+// 切换思考过程区域的展开/折叠
+const toggleThinkingProcess = () => {
+  thinkingProcessCollapsed.value = !thinkingProcessCollapsed.value
+}
+
+// 切换思考详情的展开/折叠
+const toggleThinkingDetail = () => {
+  thinkingDetailCollapsed.value = !thinkingDetailCollapsed.value
+}
+
+// 切换工具调用详情的展开/折叠
+const toggleToolCallDetail = (index: number) => {
+  // 安全检查：确保index在有效范围内
+  if (index < 0 || index >= toolCalls.value.length) {
+    return;
+  }
+  
+  // 确保toolCallCollapsed数组长度足够
+  while (toolCallCollapsed.value.length <= index) {
+    // 默认折叠状态为true
+    toolCallCollapsed.value.push(true)
+  }
+  
+  // 切换指定工具调用的折叠状态
+  const newCollapsedState = !toolCallCollapsed.value[index]
+  toolCallCollapsed.value.splice(index, 1, newCollapsedState)
+}
+
+// 获取工具调用图标
+const getToolCallIcon = (toolCall: any) => {
+  return 'Tools'
+}
+
+// 获取工具调用类型
+const getToolCallType = (toolCall: any) => {
+  // 确保toolCall对象有效
+  if (!toolCall || typeof toolCall !== 'object') {
+    return '未命名工具';
+  }
+  
+  let toolName = toolCall.name || '';
+  
+  // 如果没有名称但有input，尝试从input中提取工具名称
+  if (!toolName && toolCall.input) {
+    if (typeof toolCall.input === 'object') {
+      // 尝试从input对象的键中提取工具名称
+      if (Array.isArray(toolCall.input)) {
+        // 数组类型输入的特殊处理
+        if (toolCall.input.length > 0) {
+          toolName = 'array_data';
+        }
+      } else {
+        const inputKeys = Object.keys(toolCall.input);
+        if (inputKeys.length > 0) {
+          toolName = inputKeys[0];
+        }
+      }
+    } else if (typeof toolCall.input === 'string') {
+      // 尝试从input字符串中解析出工具名称
+      try {
+        // 处理字符串中可能包含的JSON对象
+        const parsedInput = JSON.parse(toolCall.input);
+        if (parsedInput && typeof parsedInput === 'object') {
+          const inputKeys = Object.keys(parsedInput);
+          if (inputKeys.length > 0) {
+            toolName = inputKeys[0];
+          }
+        }
+      } catch (e) {
+        // 解析失败时，尝试从字符串内容中提取可能的工具名称
+        // 处理形如"{"tool_name": {...}}"的情况
+        const toolNameMatch = toolCall.input.match(/"([^"]+)":\s*\{/);
+        if (toolNameMatch && toolNameMatch.length > 1) {
+          toolName = toolNameMatch[1];
+        }
+        
+        // 如果仍未找到工具名称，继续尝试其他方法
+        if (!toolName) {
+          // 处理形如"tool_name: {...}"的情况
+          const colonMatch = toolCall.input.match(/^(\w+):\s*/);
+          if (colonMatch && colonMatch.length > 1) {
+            toolName = colonMatch[1];
+          }
+        }
+        
+        // 如果仍未找到工具名称，处理特殊格式
+        if (!toolName) {
+          if (toolCall.input.includes('[CurrentTime]')) {
+            toolName = 'current_time';
+          }
+          if (toolCall.input.includes('[dataset_')) {
+            toolName = 'dataset_query';
+          }
+          if (toolCall.input.includes('Bill_SaleHeader') || toolCall.input.includes('SaleHeader')) {
+            toolName = 'sales_data_query';
+          }
+        }
+        
+        // 如果仍未找到工具名称，检测内容特征
+        if (!toolName) {
+          // 检测是否包含表格数据特征
+          if (toolCall.input.includes('\n') && toolCall.input.includes(',')) {
+            toolName = 'table_format';
+          }
+          // 检测是否包含SQL特征
+          if (toolCall.input.toUpperCase().includes('SELECT') || 
+               toolCall.input.toUpperCase().includes('FROM') || 
+               toolCall.input.toUpperCase().includes('WHERE')) {
+            toolName = 'sql_execute';
+          }
+          // 检测是否包含知识库查询特征
+          if (toolCall.input.includes('查询') || 
+               toolCall.input.includes('搜索') || 
+               toolCall.input.includes('查找')) {
+            toolName = 'dataset_query';
+          }
+        }
+        
+        // 对于实时数据，确保有默认工具名称，避免空标题
+        if (!toolName) {
+          toolName = '未命名工具';
+        }
+      }
+    }
+  }
+  
+  // 确保工具名称不为空
+  toolName = toolName || '未命名工具';
+  
+  // 对于dataset_xxx格式的工具名称，显示为知识库
+  if (toolName.startsWith('dataset_') || toolName === 'dataset_query') {
+    return '知识库';
+  }
+  
+  // 对于current_time格式的工具名称，显示为当前时间
+  if (toolName === 'current_time') {
+    return '当前时间';
+  }
+  
+  // 对于sql_execute格式的工具名称，显示为SQL执行
+  if (toolName === 'sql_execute') {
+    return 'SQL执行';
+  }
+  
+  // 对于bar_chart格式的工具名称，显示为柱状图
+  if (toolName === 'bar_chart') {
+    return '柱状图';
+  }
+  
+  // 对于table_format格式的工具名称，显示为表格格式化
+  if (toolName === 'table_format' || toolName === 'sales_data_query') {
+    return '表格数据';
+  }
+  
+  // 对于array_data格式的工具名称，显示为数组数据
+  if (toolName === 'array_data') {
+    return '数组数据';
+  }
+  
+  // 对于其他情况，返回工具名称或默认值
+  return toolName || '未命名工具';
+}
+
+// 格式化工具调用数据为JSON字符串
+const formatToolCallData = (toolCallData: any) => {
+  try {
+    // 处理所有工具的响应数据的情况（空白工具）
+    if (toolCallData && typeof toolCallData === 'object' && toolCallData.all_tools_response) {
+      return '所有工具的响应数据';
+    }
+    
+    // 如果是null或undefined，返回明确的提示
+    if (toolCallData === null || toolCallData === undefined) {
+      return 'null';
+    }
+    
+    // 如果是空对象，返回提示信息
+    if (typeof toolCallData === 'object' && Object.keys(toolCallData).length === 0) {
+      return '空数据';
+    }
+    
+    // 如果是对象，格式化为JSON字符串，限制最大深度以避免过宽显示
+    if (typeof toolCallData === 'object') {
+      try {
+        // 特殊处理特定类型的工具数据
+        // 检查对象是否有current_time字段
+        if ('current_time' in toolCallData && typeof toolCallData.current_time === 'object') {
+          // current_time工具可能没有参数，直接返回友好提示
+          if (Object.keys(toolCallData.current_time).length === 0) {
+            return '{"current_time": {}}';
+          }
+        }
+        
+        // 检查对象是否有dataset_xxx格式的字段
+        for (const key in toolCallData) {
+          if (key.startsWith('dataset_')) {
+            // 确保dataset的参数被正确格式化
+            if (toolCallData[key] && typeof toolCallData[key] === 'object' && toolCallData[key].query) {
+              // 保留原始格式，但确保正确显示
+              return JSON.stringify(toolCallData, null, 2);
+            }
+          }
+        }
+        
+        // 检查对象是否有sql_execute字段
+        if ('sql_execute' in toolCallData && typeof toolCallData.sql_execute === 'object' && toolCallData.sql_execute.query) {
+          // 对于SQL查询，确保SQL语句格式正确显示
+          const sqlData = {
+            sql_execute: {
+              query: toolCallData.sql_execute.query
+            }
+          };
+          return JSON.stringify(sqlData, null, 2);
+        }
+        
+        // 检查对象是否有bar_chart字段
+        if ('bar_chart' in toolCallData && typeof toolCallData.bar_chart === 'object') {
+          // 对于柱状图数据，确保所有字段都被正确显示
+          const chartData = {
+            bar_chart: {
+              title: toolCallData.bar_chart.title || '未命名图表',
+              data: toolCallData.bar_chart.data || '',
+              x_axis: toolCallData.bar_chart.x_axis || ''
+            }
+          };
+          return JSON.stringify(chartData, null, 2);
+        }
+        
+        // 对于table_format格式的数据，进行特殊处理
+        if ('table_format' in toolCallData && typeof toolCallData.table_format === 'object') {
+          return JSON.stringify(toolCallData.table_format, null, 2);
+        }
+        
+        // 对于包含表格数据的对象，确保正确格式化显示
+        // 检查对象是否包含典型的表格数据结构
+        if (toolCallData.data && Array.isArray(toolCallData.data) && toolCallData.data.length > 0) {
+          return JSON.stringify(toolCallData, null, 2);
+        }
+        
+        // 对于其他类型的对象，格式化为JSON字符串，限制最大深度以避免过宽显示
+        // 对于可能包含大量数据的对象，限制显示长度
+        const jsonStr = JSON.stringify(toolCallData, null, 2);
+        if (jsonStr.length > 10000) {
+          return jsonStr.substring(0, 10000) + '\n\n... 数据过长，已截断 ...';
+        }
+        return jsonStr;
+      } catch (e) {
+        // 处理循环引用等特殊情况
+        return `对象序列化失败：${String(toolCallData)}`;
+      }
+    }
+    
+    // 如果是字符串
+    else if (typeof toolCallData === 'string') {
+      // 检查字符串是否已经是有效的JSON格式
+      if ((toolCallData.startsWith('{') && toolCallData.endsWith('}')) ||
+          (toolCallData.startsWith('[') && toolCallData.endsWith(']'))) {
+        try {
+          // 尝试解析并重新格式化
+          const parsed = JSON.parse(toolCallData);
+          const jsonStr = JSON.stringify(parsed, null, 2);
+          if (jsonStr.length > 10000) {
+            return jsonStr.substring(0, 10000) + '\n\n... 数据过长，已截断 ...';
+          }
+          return jsonStr;
+        } catch (e) {
+          // 如果解析失败，返回原始字符串，但添加提示
+          return `数据格式可能不完整或包含特殊字符：\n${toolCallData}`;
+        }
+      }
+      
+      // 尝试从字符串中提取JSON部分（处理类似"参数: {...}"的格式）
+      try {
+        const jsonMatch = toolCallData.match(/\{.*\}|\[.*\]/s);
+        if (jsonMatch && jsonMatch.length > 0) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          return JSON.stringify(parsed, null, 2);
+        }
+      } catch (e) {
+        // 如果尝试提取失败，继续使用原始数据
+      }
+      
+      // 处理从截图中观察到的特殊格式，如包含[CurrentTime]、[dataset_xxx]等
+      if (toolCallData.includes('[CurrentTime]')) {
+        return '当前时间查询';
+      } else if (toolCallData.includes('[dataset_')) {
+        return '知识库查询';
+      } else if (toolCallData.includes('Bill_SaleHeader') || toolCallData.includes('SaleHeader')) {
+        // 尝试格式化表格数据，使其更易读
+        try {
+          // 检测是否为CSV或类似表格格式的字符串
+          if (toolCallData.includes('\n') && toolCallData.includes(',')) {
+            // 表格数据格式化，确保美观显示
+            const lines = toolCallData.split('\n');
+            if (lines.length > 1) {
+              // 对于表格数据，确保完整显示表头，并适当截断内容
+              const header = lines[0];
+              const contentLines = lines.slice(1);
+              
+              // 如果内容行过多，只显示部分
+              if (contentLines.length > 10) {
+                return header + '\n' + contentLines.slice(0, 8).join('\n') + '\n...\n' + contentLines.slice(-2).join('\n');
+              }
+              return toolCallData;
+            }
+          }
+        } catch (e) {
+          // 如果格式化失败，返回原始数据
+        }
+      }
+      
+      // 检测是否包含类似JSON的格式，但被包裹在其他文本中
+      if (toolCallData.includes('{') && toolCallData.includes('}') && toolCallData.includes(':')) {
+        try {
+          // 找到第一个{和最后一个}，提取JSON部分
+          const firstBrace = toolCallData.indexOf('{');
+          const lastBrace = toolCallData.lastIndexOf('}');
+          if (firstBrace !== -1 && lastBrace !== -1 && firstBrace < lastBrace) {
+            const potentialJson = toolCallData.substring(firstBrace, lastBrace + 1);
+            const parsed = JSON.parse(potentialJson);
+            return JSON.stringify(parsed, null, 2);
+          }
+        } catch (e) {
+          // 如果解析失败，继续处理
+        }
+      }
+      
+      // 如果是空字符串，返回提示
+      if (toolCallData.trim() === '') {
+        return '空字符串';
+      }
+      
+      // 对于可能包含换行符的长字符串，确保正确显示
+      // 保留原始换行符，不进行转义，以确保表格数据正确显示
+      return toolCallData;
+    }
+    
+    // 其他类型的数据（数字、布尔值等）
+    return String(toolCallData);
+  } catch (e) {
+    // 如果发生任何错误，返回包含错误信息的原始数据
+    console.error('格式化工具调用数据时出错:', e);
+    return `数据解析错误：${String(toolCallData || '无数据')}`;
+  }
+}
+</script>
+
+<style scoped lang="scss">
+.thinking-process-container {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  max-width: 100%;
+  position: relative;
+  background: #ffffff;
+  margin-top: 12px;
+}
+
+.events-header {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background-color: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.events-header::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #4299e1, #9f7aea);
+}
+
+.events-icon {
+  margin-right: 8px;
+  color: #4299e1;
+}
+
+.events-title {
+  font-weight: 600;
+  color: #2d3748;
+  margin-right: 8px;
+  font-size: 16px;
+}
+
+.events-tag {
+  margin-right: auto;
+  background: #e2e8f0;
+  color: #4a5568;
+  border: none;
+}
+
+.collapse-icon {
+  transition: transform 0.3s ease;
+  color: #4a5568;
+  
+  &.is-collapsed {
+    transform: rotate(-90deg);
   }
 }
 
-:deep() {
-  .el-bubble-list {
-    padding-top: 24px;
-    width: 100%;
-  }
+.events-list {
+  border-top: 1px solid #e2e8f0;
+  max-height: 400px;
+  overflow-y: auto;
+  background-color: #ffffff;
+  border-radius: 0 0 8px 8px;
+  border: 1px solid #e2e8f0;
+  border-top: none;
+}
+
+/* 滚动条样式优化 */
+.events-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.events-list::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 4px;
+}
+
+.events-list::-webkit-scrollbar-thumb {
+  background: #4299e1;
+  border-radius: 4px;
+}
+
+.events-list::-webkit-scrollbar-thumb:hover {
+  background: #3182ce;
+}
+
+.event-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f1f5f9;
   
-  .el-bubble {
-    padding: 0 12px;
-    padding-bottom: 24px;
-    width: 100%;
-  }
-  
-  .el-typewriter {
-    overflow: hidden;
-    border-radius: 12px;
-  }
-  
-  .user-content {
-    // 换行
-    white-space: pre-wrap;
-  }
-  
-  /* 工作流事件样式优化 */
-  .workflow-events-container {
-    display: block;
-    width: 100%;
-    max-width: 100%;
-    margin-top: 20px;
-    overflow: hidden;
-    background: #ffffff;
-    border-radius: 8px;
-    position: relative;
-    border: 1px solid #e2e8f0;
-  }
-  
-  // 工作流样式优化 - 简约设计
-  .workflow-events-toggle {
-    box-sizing: border-box;
-    display: block;
-    width: 100%;
-    padding: 12px 16px;
-    cursor: pointer;
-    background: #f8fafc;
-    border-bottom: 1px solid #e2e8f0;
-    border-radius: 8px 8px 0 0;
-    position: relative;
-    overflow: hidden;
-  }
-  
-  .workflow-events-toggle::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 3px;
-    background: #4299e1;
-  }
-  
-  .workflow-events-label {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    font-size: 16px;
-    font-weight: 600;
-    color: #1a202c;
-  }
-  
-  .workflow-events-content {
-    box-sizing: border-box;
-    display: block;
-    width: 100%;
-    max-height: 300px;
-    padding: 0;
-    overflow-y: auto;
-    background-color: #ffffff;
-    border-radius: 0 0 8px 8px;
-    border: 1px solid #e2e8f0;
-    border-top: none;
-  }
-  
-  .workflow-event-item {
-    box-sizing: border-box;
-    display: block;
-    width: 100%;
-    padding: 16px 20px;
-    border-bottom: 1px solid #f1f5f9;
-    background-color: #ffffff;
-    position: relative;
-  }
-  
-  .workflow-event-item:last-child {
+  &:last-child {
     border-bottom: none;
-    border-radius: 0 0 8px 8px;
   }
   
-  .event-header {
-    box-sizing: border-box;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: center;
-    width: 100%;
-    margin-bottom: 8px;
+  &.event-thinking {
+    border-left: 3px solid #4299e1;
   }
   
-  .event-type {
-    font-size: 14px;
-    font-weight: 600;
-    color: #ffffff;
-    padding: 6px 12px;
-    background: #4299e1;
-    border-radius: 16px;
-    flex-shrink: 0;
-    display: inline-block;
+  &.event-tool-call {
+    border-left: 3px solid #9f7aea;
+  }
+}
+
+.event-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.event-icon {
+  margin-right: 8px;
+  font-size: 16px;
+  
+  .event-thinking & {
+    color: #4299e1;
   }
   
-  .event-message {
-    flex: 1;
-    font-size: 14px;
-    line-height: 1.5;
-    color: #2d3748;
-    padding: 0 12px;
-    font-weight: 500;
+  .event-tool-call & {
+    color: #9f7aea;
+  }
+}
+
+.event-type {
+  font-weight: 600;
+  font-size: 14px;
+  flex: 1;
+  
+  .event-thinking & {
+    color: #4299e1;
   }
   
-  .event-data-toggle {
-    padding: 6px 12px;
-    font-size: 14px;
-    color: #ffffff;
-    cursor: pointer;
-    border-radius: 8px;
-    background: #4a5568;
-    border: none;
-    flex-shrink: 0;
-    font-weight: 500;
-    display: inline-block;
+  .event-tool-call & {
+    color: #7c3aed;
   }
+}
+
+.event-collapse-icon {
+  transition: transform 0.3s ease;
+  color: #4a5568;
+  margin-left: 8px;
   
-  .event-data {
-    box-sizing: border-box;
-    display: block;
-    width: 100%;
-    padding: 16px;
-    margin-top: 12px;
-    overflow-x: auto;
-    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-    font-size: 14px;
-    line-height: 1.6;
-    color: #1e293b;
-    word-break: break-all;
-    word-wrap: break-word;
+  &.is-collapsed {
+    transform: rotate(-90deg);
+  }
+}
+
+.event-message {
+  font-size: 13px;
+  color: #4a5568;
+  line-height: 1.4;
+  padding-left: 24px;
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  
+  &.is-collapsed {
+    display: none;
+  }
+}
+
+.event-raw-data {
+  font-size: 12px;
+  background-color: #f8fafc;
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin-top: 8px;
+  overflow-x: auto;
+  /* 限制宽度，确保与AI回复和工作流事件宽度一致 */
+  max-width: calc(100vw - 80px);
+  box-sizing: border-box;
+
+  &.is-collapsed {
+    display: none;
+  }
+
+  pre {
+    margin: 0;
     white-space: pre-wrap;
-    background: #f8fafc;
-    border: 1px solid #cbd5e0;
-    border-radius: 8px;
+    word-wrap: break-word;
+    color: #2d3748;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    /* 美化JSON数据显示，添加最大宽度限制 */
+    max-width: 100%;
+    overflow-wrap: break-word;
+    word-break: break-all;
   }
+}
 
-  // 滚动条样式优化
-  .workflow-events-content::-webkit-scrollbar {
-    width: 8px;
-  }
+.tool-section {
+  margin-bottom: 12px;
   
-  .workflow-events-content::-webkit-scrollbar-track {
-    background: #f1f5f9;
-    border-radius: 4px;
+  &:last-child {
+    margin-bottom: 0;
   }
-  
-  .workflow-events-content::-webkit-scrollbar-thumb {
-    background: #4299e1;
-    border-radius: 4px;
-  }
-  
-  .workflow-events-content::-webkit-scrollbar-thumb:hover {
-    background: #3182ce;
-  }
-  
-  .event-data::-webkit-scrollbar {
-    height: 8px;
-  }
-  
-  .event-data::-webkit-scrollbar-track {
-    background: #f1f5f9;
-    border-radius: 4px;
-  }
-  
-  .event-data::-webkit-scrollbar-thumb {
-    background: #4299e1;
-    border-radius: 4px;
-  }
-  
-  .event-data::-webkit-scrollbar-thumb:hover {
-    background: #3182ce;
-  }
+}
 
-  /* 统计数据样式优化 - 简约设计 */
-  .token-cost-info {
-    display: flex;
-    flex-wrap: nowrap;
-    gap: 20px;
-    padding: 12px 16px;
-    margin-top: 16px;
-    font-size: 14px;
-    color: #4a5568;
-    background: #f8fafc;
-    border: 1px solid #c6f6d5;
-    border-radius: 8px;
-    position: relative;
-    overflow: hidden;
-  }
-  
-  .token-cost-info::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: #4299e1;
-  }
-  
-  .token-count,
-  .cost-amount,
-  .message-time {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    font-weight: 500;
-  }
-  
-  .token-count .value,
-  .cost-amount .value,
-  .message-time .value {
-    color: #0f172a;
-    font-weight: 600;
-  }
-  
-  .message-time-only {
-    padding: 12px 16px;
-    margin-top: 12px;
-    font-size: 14px;
-    color: #718096;
-    text-align: right;
-    font-style: italic;
-    background: #f8fafc;
-    border-radius: 8px;
-    border: 1px solid #e2e8f0;
-  }
-  
-  /* 用户消息中的文件引用样式 */
-  .user-files-reference {
-    margin-top: 12px;
-    padding: 12px;
-    background-color: #f1f5f9;
-    border-radius: 8px;
-    border: 1px solid #e2e8f0;
-    font-size: 14px;
-  }
-  
-  .user-files-reference .files-title {
-    font-weight: 600;
-    margin-bottom: 8px;
-    color: #4a5568;
-  }
-  
-  .user-files-reference .file-item {
-    padding: 4px 0;
-    color: #4a5568;
-    font-size: 14px;
-    line-height: 1.4;
-  }
+.tool-section-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #4a5568;
+}
+
+/* 动画 */
+.slideFade-enter-active {
+  transition: all 0.3s ease;
+}
+
+.slideFade-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slideFade-enter-from {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+
+.slideFade-leave-to {
+  opacity: 0;
+  transform: translateY(-10px);
 }
 </style>
+

@@ -289,7 +289,8 @@ def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimat
                 agent_id=request.agent_id,
                 role="agent",
                 content=full_message_content,  # 保存完整的消息内容
-                thought_content=thought_content if thought_content and thought_content.strip() else None,  # 保存思考内容
+                # 正确处理JSON格式的thought_content
+                thought_content=thought_content if isinstance(thought_content, dict) or isinstance(thought_content, list) else (thought_content if thought_content and thought_content.strip() else None),
                 workflow_events=workflow_events if workflow_events else None,
                 cost=cost,
                 total_tokens=total_tokens_estimated,  # 使用前端显示的估算值

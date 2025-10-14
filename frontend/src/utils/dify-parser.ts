@@ -279,22 +279,26 @@ export class DifyRenderer {
 
       case 'agent_thought': {
         // 处理思考事件 - 只传递给工作流回调，避免重复显示
-        // 提取工具调用信息
+        // 根据文档，提取正确的字段信息
         const toolInfo = {
           name: data.tool || '',
-          input: data.tool_input ? JSON.stringify(data.tool_input, null, 2) : '',
+          input: data.tool_input || '{}',
           observation: data.observation || ''
         };
+        
+        // 根据文档，优先使用thought字段作为思考内容，如果没有则使用observation字段
+        const thoughtContent = data.thought || data.observation || '';
         
         if (this.onWorkflowEventCallback) {
           this.onWorkflowEventCallback({
             event: 'agent_thought',
             data: data,
-            message: data.thought || data.observation || '',
+            message: thoughtContent,
             toolInfo: toolInfo
           });
         }
-        break;
+        // 根据经验教训，处理完agent_thought事件后必须立即返回，避免后续流程处理
+        return;
       }
 
       case 'message_end': {
@@ -325,10 +329,18 @@ export class DifyRenderer {
       case 'statistics':
         // 处理统计信息事件 - 传递给工作流事件回调
         if (this.onWorkflowEventCallback) {
+          // 构建包含详细统计数据的消息
+          let statisticsMessage = '统计信息已更新';
+          if (data.data) {
+            const statsData = data.data;
+            const tokensInfo = statsData.total_tokens_estimated ? `，预计使用 tokens: ${statsData.total_tokens_estimated}` : '';
+            const costInfo = statsData.estimated_cost ? `，预计费用: ${statsData.estimated_cost}` : '';
+            statisticsMessage = `统计数据更新${tokensInfo}${costInfo}`;
+          }
           this.onWorkflowEventCallback({
             event,
             data,
-            message: '统计信息已更新',
+            message: statisticsMessage,
           });
         }
         break;

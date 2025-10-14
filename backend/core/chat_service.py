@@ -105,7 +105,8 @@ class ChatService:
         
         # 用于收集所有流式响应
         full_message = ""
-        thought_content = ""
+        thought_content = []  # 改为列表，保存所有原始的agent_thought事件数据
+        formatted_thought = {}
         workflow_events = []
         conversation_id = None
         message_id = None
@@ -119,8 +120,11 @@ class ChatService:
                 
                 # 收集思考内容（agent_thought事件）
                 if response.metadata and response.metadata.get("event") == "agent_thought":
+                    # 将每个agent_thought事件添加到列表中，而不是覆盖
+                    thought_content.append(response.metadata)
                     thought_data = response.metadata
-                    # 构建思考内容文本
+                    
+                    # 构建格式化的思考内容（用于后续处理）
                     thought_text = thought_data.get("thought", "")
                     
                     # 添加工具调用信息（如果有的话）
@@ -146,7 +150,24 @@ class ChatService:
                     if thought_data.get("file_id"):
                         thought_text += f"\n\n[文件ID]: {thought_data['file_id']}\n"
                     
-                    thought_content += thought_text + "\n"
+                    # 构建formatted_thought字典（用于后续处理）
+                    formatted_thought = {
+                        "content": thought_text,
+                        "tool_calls": [],
+                        "file_references": []
+                    }
+                    
+                    # 添加工具调用信息到formatted_thought
+                    if thought_data.get("tool"):
+                        formatted_thought["tool_calls"].append({
+                            "name": thought_data.get("tool"),
+                            "input": thought_data.get("tool_input", "")
+                        })
+                    
+                    # 添加文件引用信息到formatted_thought
+                    if thought_data.get("message_files"):
+                        formatted_thought["file_references"] = thought_data.get("message_files")
+                        
                 # 收集工作流事件 - 只收集真正的工作流相关事件，排除text_chunk、message和agent_thought事件
                 elif response.metadata and "event" in response.metadata:
                     event_type = response.metadata.get("event")
@@ -175,7 +196,7 @@ class ChatService:
             except Exception as e:
                 pass
     
-    def _save_conversation_and_message_stream(self, request: ChatRequest, full_message: str, thought_content: str, workflow_events: list, agent):
+    def _save_conversation_and_message_stream(self, request: ChatRequest, full_message: str, thought_content: list, workflow_events: list, agent):
         """保存流式对话和消息到数据库"""
         try:
             # 生成对话ID（如果有会话ID，强制使用传参的会话ID；如果没有会话ID就可以有解析出来的会话ID；如果都没有的话就新建会话ID）
@@ -251,7 +272,7 @@ class ChatService:
                 agent_id=request.agent_id,
                 role="agent",
                 content=full_message,  # 确保保存完整的流式响应内容
-                thought_content=thought_content,  # 保存思考内容
+                thought_content=thought_content if thought_content else None,  # 保存原始的agent_thought事件数据
                 message_metadata=metadata_for_storage,
                 workflow_events=workflow_events if workflow_events else None,
                 cost=cost,
@@ -312,7 +333,7 @@ class ChatService:
             # 保存AI回复消息（总是保存，即使内容为空）
             # 提取workflow_events（如果有的话）
             workflow_events = []
-            thought_content = ""
+            thought_content = {}
             metadata_for_storage = response.metadata
 
             # 处理workflow_events和thought_content
@@ -329,15 +350,63 @@ class ChatService:
                     # 从message_metadata中移除工作流事件数据，避免重复存储
                     metadata_for_storage = None
                 elif event_type == "agent_thought":
-                    thought_content = response.metadata.get("thought", "")
-                    # 不将agent_thought事件添加到workflow_events中
-                    metadata_for_storage = None
-            elif response.metadata:
-                # 处理没有"event"字段但有metadata的情况
-                # 检查是否包含thought_content字段
-                if "thought_content" in response.metadata:
-                    thought_content = response.metadata.get("thought_content", "")
-                    metadata_for_storage = None
+                    thought_content_text = response.metadata.get("thought", "")
+                    # 构建JSON格式的思考内容
+                    thought_content = {
+                        'content': response.metadata.get('content', ''),
+                        'tool_calls': [],
+                        'file_references': []
+                    }
+                    
+                    # 如果有工具调用信息
+                    if 'tool_calls' in response.metadata and response.metadata['tool_calls']:
+                        thought_content['tool_calls'] = response.metadata['tool_calls']
+                    
+                    # 如果有文件引用
+                    if 'file_references' in response.metadata and response.metadata['file_references']:
+                        thought_content['file_references'] = response.metadata['file_references']
+                    
+                    # 构建用于SSE传输的文本表示
+                    thought_text = response.metadata.get('content', '')
+                    
+                    # 处理工具调用信息
+                    if 'tool_calls' in response.metadata and response.metadata['tool_calls']:
+                        for tool_call in response.metadata['tool_calls']:
+                            if isinstance(tool_call, dict):
+                                tool_name = tool_call.get('name', 'unknown_tool')
+                                tool_input = tool_call.get('parameters', {})
+                                
+                                # 确保tool_input是有效的JSON
+                                if isinstance(tool_input, str):
+                                    try:
+                                        tool_input = json.loads(tool_input)
+                                    except json.JSONDecodeError:
+                                        pass  # 保持原始字符串
+                                
+                                thought_text += f"\n\n[工具调用: {tool_name}]\n参数: "
+                                
+                                # 格式化工具参数为JSON字符串
+                                if isinstance(tool_input, dict):
+                                    thought_text += json.dumps(tool_input, ensure_ascii=False)
+                                else:
+                                    thought_text += str(tool_input)
+                            else:
+                                # 处理非字典类型的工具调用
+                                thought_text += f"\n\n[工具调用]\n{str(tool_call)}"
+                    
+                    # 处理文件引用信息
+                    if 'file_references' in response.metadata and response.metadata['file_references']:
+                        file_ids = [f.get('file_id', '') for f in response.metadata['file_references'] if f.get('file_id')]
+                        if file_ids:
+                            thought_text += f"\n\n[引用文件]\n{', '.join(file_ids)}"
+                elif response.metadata:
+                    # 处理没有"event"字段但有metadata的情况
+                    # 检查是否包含thought_content字段
+                    if "thought_content" in response.metadata:
+                        thought_content_text = response.metadata.get("thought_content", "")
+                        # 将字符串转换为字典格式
+                        thought_content = {"content": thought_content_text}
+                        metadata_for_storage = None
         
             # 计算token和费用
             # 优先使用response.total_tokens的值，如果不存在则使用total_tokens_estimated
@@ -373,7 +442,7 @@ class ChatService:
                 agent_id=request.agent_id,
                 role="agent",
                 content=response.message or "",  # 确保content不为None
-                thought_content=thought_content,  # 保存思考内容
+                thought_content=thought_content if thought_content else None,  # 保存思考内容
                 message_metadata=metadata_for_storage,
                 workflow_events=workflow_events if workflow_events else None,
                 cost=cost,

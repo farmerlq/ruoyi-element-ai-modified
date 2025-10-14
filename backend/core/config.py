@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 一周
     
     # 认证配置
-    ENABLE_AUTH: bool = True  # 启用认证
+    ENABLE_AUTH: bool = False  # 禁用认证（开发环境）
     
     class Config:
         env_file = ".env"

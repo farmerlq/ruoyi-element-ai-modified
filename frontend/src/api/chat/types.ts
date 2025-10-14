@@ -116,7 +116,7 @@ export interface GetChatListParams {
    */
   role?: string;
   /**
-   * 会话id
+   * 会话id (字符串格式)
    */
   sessionId?: string;
   /**
@@ -166,11 +166,11 @@ export interface ChatMessageVo {
    */
   role?: string;
   /**
-   * 会话id
+   * 会话id (字符串格式)
    */
-  sessionId?: number;
+  sessionId?: string;
   /**
-   * 会话ID（字符串格式）
+   * 会话ID（字符串格式，与sessionId保持一致）
    */
   conversation_id?: string;
   /**

@@ -75,6 +75,36 @@ export const useChatStore = defineStore('chat', () => {
       // 从workflow_events中提取统计信息
       const workflowEvents = Array.isArray(item.workflow_events) ? item.workflow_events : [];// 检查是否有工作流完成事件
       // const finishedEvent = workflowEvents.find((event: any) => event.event === 'workflow_finished');
+      
+      // 从workflow_events中提取toolInfoList信息
+      let toolInfoList: any[] = [];
+      if (Array.isArray(workflowEvents)) {
+        // 查找所有agent_thought事件并提取toolInfo
+        workflowEvents.forEach((event: any) => {
+          if (event.event === 'agent_thought' && event.toolInfo) {
+            // 检查是否已存在相同的工具调用，避免重复
+            const isDuplicate = toolInfoList.some((toolInfo: any) => 
+              toolInfo.name === event.toolInfo.name && 
+              JSON.stringify(toolInfo.input) === JSON.stringify(event.toolInfo.input)
+            );
+            
+            if (!isDuplicate) {
+              toolInfoList.push(event.toolInfo);
+            }
+          }
+          // 也支持从data字段中提取toolInfo
+          else if (event.data && event.data.toolInfo) {
+            const isDuplicate = toolInfoList.some((toolInfo: any) => 
+              toolInfo.name === event.data.toolInfo.name && 
+              JSON.stringify(toolInfo.input) === JSON.stringify(event.data.toolInfo.input)
+            );
+            
+            if (!isDuplicate) {
+              toolInfoList.push(event.data.toolInfo);
+            }
+          }
+        });
+      }
 
       // 将API返回的workflow_events数据转换为前端期望格式
       const convertedWorkflowEvents = workflowEvents.map((event: any) => ({
@@ -103,6 +133,8 @@ export const useChatStore = defineStore('chat', () => {
         thinkCollapse: false,
         workflow_events: workflowEvents, // 保持原始数据用于向后兼容
         workflowEvents: convertedWorkflowEvents, // 使用转换后的数据
+        // 添加工具调用信息列表
+        toolInfoList: toolInfoList,
         // 添加工作流事件区域的折叠状态，默认折叠
         workflowEventsCollapsed: true,
         // 添加文件引用信息（如果存在）
