@@ -31,6 +31,15 @@ export const layoutRouter: RouteRecordRaw[] = [
           isDefaultChat: false,
         },
       },
+      {
+        path: '/chart-test',
+        name: 'chartTest',
+        component: () => import('@/components/ChartTest.vue'),
+        meta: {
+          title: '图表测试页面',
+          isDefaultChat: false,
+        },
+      },
     ],
   },
 ];

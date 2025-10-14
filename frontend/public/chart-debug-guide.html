@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ECharts 图表渲染调试指南</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #34495e;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
+        h3 {
+            color: #7f8c8d;
+            margin-top: 20px;
+        }
+        pre {
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            padding: 15px;
+            overflow-x: auto;
+            font-family: 'Courier New', Courier, monospace;
+            border: 1px solid #e9ecef;
+        }
+        code {
+            background-color: #f8f9fa;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 90%;
+        }
+        .success {
+            color: #27ae60;
+            font-weight: bold;
+        }
+        .error {
+            color: #e74c3c;
+            font-weight: bold;
+        }
+        .warning {
+            color: #f39c12;
+            font-weight: bold;
+        }
+        .info {
+            color: #3498db;
+        }
+        .card {
+            background-color: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        .solution {
+            background-color: #e8f4fd;
+            border-left: 4px solid #2980b9;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        ul {
+            padding-left: 20px;
+        }
+        li {
+            margin-bottom: 8px;
+        }
+        .step {
+            margin-bottom: 25px;
+        }
+        .highlight {
+            background-color: #fff3cd;
+            padding: 2px 4px;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ECharts 图表渲染调试指南</h1>
+        
+        <div class="card">
+            <h2>测试结果总结</h2>
+            <p><span class="success">✅ 成功:</span> 使用 CDN 直接引入的 ECharts 能够正常渲染图表 (minimal-chart-test.html)</p>
+            <p><span class="error">❌ 问题:</span> 在项目中通过组件使用 ECharts 时图表无法正确渲染</p>
+        </div>
+        
+        <h2>问题分析</h2>
+        
+        <div class="step">
+            <h3>1. 容器尺寸问题</h3>
+            <p>图表渲染时，容器的尺寸是关键因素。如果图表容器的宽度或高度为0，图表将无法正确渲染。</p>
+            <div class="card">
+                <p>从代码中发现：</p>
+                <ul>
+                    <li><code>createECharts</code> 函数中有检查容器尺寸的逻辑，但没有针对尺寸为0的情况提供解决方案</li>
+                    <li><code>EnhancedMarkdown</code> 组件中动态创建的图表容器可能在某些情况下没有正确设置尺寸</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="step">
+            <h3>2. 组件注册问题</h3>
+            <p>ECharts 5.x 版本使用按需引入的方式，需要注册使用的组件。从代码中发现，项目中已经正确注册了所需的组件，但可能存在版本兼容性问题。</p>
+        </div>
+        
+        <div class="step">
+            <h3>3. 渲染时机问题</h3>
+            <p>图表需要在DOM完全加载后才能正确渲染。<code>EnhancedMarkdown</code> 组件中有多次尝试渲染图表的逻辑，但可能仍存在时机问题。</p>
+        </div>
+        
+        <h2>解决方案</h2>
+        
+        <div class="solution">
+            <h3>1. 修复 chart-parser.ts 中的 createECharts 函数</h3>
+            <p>确保即使容器尺寸为0，图表也能在尺寸变为有效后自动渲染：</p>
+            <pre>// 修改前
+if (containerRect.width === 0 || containerRect.height === 0) {
+  console.warn('容器尺寸为0，可能影响图表渲染');
+}
+
+// 初始化图表实例
+const chart = echarts.init(container, undefined, {
+  renderer: 'svg'
+});
+</pre>
+            <pre>// 修改后
+// 初始化图表实例
+const chart = echarts.init(container, undefined, {
+  renderer: 'svg'
+});
+
+// 处理容器尺寸为0的情况
+if (containerRect.width === 0 || containerRect.height === 0) {
+  console.warn('容器尺寸为0，添加尺寸变化监听');
+  // 添加一个尺寸监听器，当尺寸变化时重新渲染
+  const resizeObserver = new ResizeObserver(entries => {
+    const entry = entries[0];
+    if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+      if (chart && !chart.isDisposed()) {
+        chart.resize();
+        chart.setOption(options, true);
+      }
+      resizeObserver.unobserve(container);
+    }
+  });
+  resizeObserver.observe(container);
+}
+</pre>
+        </div>
+        
+        <div class="solution">
+            <h3>2. 增强 EnhancedMarkdown 组件中的渲染逻辑</h3>
+            <p>确保图表容器在创建时有明确的尺寸，并且在DOM完全加载后再渲染图表：</p>
+            <pre>// 修改前
+const chartContainer = document.createElement('div');
+chartContainer.className = 'chart-container';
+chartContainer.style.width = '100%';
+chartContainer.style.height = '400px';
+chartContainer.style.margin = '16px 0';
+</pre>
+            <pre>// 修改后
+const chartContainer = document.createElement('div');
+chartContainer.className = 'chart-container';
+// 使用固定尺寸而非百分比，确保初始尺寸不为0
+chartContainer.style.width = '800px';
+chartContainer.style.maxWidth = '100%';
+chartContainer.style.height = '400px';
+chartContainer.style.minHeight = '300px';
+chartContainer.style.margin = '16px 0';
+</pre>
+        </div>
+        
+        <div class="solution">
+            <h3>3. 优化渲染时机</h3>
+            <p>在 EnhancedMarkdown 组件中添加更可靠的渲染触发机制：</p>
+            <pre>// 在 EnhancedMarkdown 组件的 script 部分添加
+// 添加一个基于 ResizeObserver 的图表初始化器
+const initializeChartWhenVisible = (container, config) => {
+  const observer = new ResizeObserver(entries => {
+    const entry = entries[0];
+    if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+      renderChart(container, config);
+      observer.unobserve(container);
+    }
+  });
+  observer.observe(container);
+  
+  // 初始检查
+  const rect = container.getBoundingClientRect();
+  if (rect.width > 0 && rect.height > 0) {
+    renderChart(container, config);
+    observer.unobserve(container);
+  }
+};
+
+// 然后在原有的 renderChart 调用处，替换为这个函数
+// renderChart(chartContainer, config);
+initializeChartWhenVisible(chartContainer, config);
+</pre>
+        </div>
+        
+        <div class="solution">
+            <h3>4. 添加更详细的错误处理</h3>
+            <p>在 chart-parser.ts 中的 renderChart 函数中添加更详细的错误处理和重试机制：</p>
+            <pre>// 修改前的 renderChart 函数
+
+export function renderChart(container: HTMLElement, config: ChartConfig): void {
+  try {
+    console.log('开始渲染图表:', { container, config });
+    // 原有代码...
+  } catch (error) {
+    console.error('图表渲染错误:', error);
+  }
+}
+</pre>
+            <pre>// 修改后的 renderChart 函数
+
+export function renderChart(container: HTMLElement, config: ChartConfig): void {
+  try {
+    console.log('开始渲染图表:', { container, config });
+    
+    // 检查容器是否有效
+    if (!container) {
+      console.error('图表容器不存在');
+      return;
+    }
+    
+    // 检查容器是否已添加到DOM
+    if (!document.contains(container)) {
+      console.warn('图表容器尚未添加到DOM中');
+      // 添加延时重试
+      setTimeout(() => {
+        if (document.contains(container)) {
+          renderChart(container, config);
+        } else {
+          console.error('重试失败，容器仍未添加到DOM');
+          container.innerHTML = '<div class="chart-error">图表容器未找到</div>';
+        }
+      }, 500);
+      return;
+    }
+    
+    // 检查容器尺寸
+    const rect = container.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      console.warn('容器尺寸为0，添加延时重试');
+      // 添加延时重试
+      setTimeout(() => {
+        const newRect = container.getBoundingClientRect();
+        if (newRect.width > 0 && newRect.height > 0) {
+          renderChart(container, config);
+        } else {
+          console.error('重试失败，容器尺寸仍为0');
+          container.innerHTML = '<div class="chart-error">图表容器尺寸无效</div>';
+        }
+      }, 500);
+      return;
+    }
+    
+    // 清空容器
+    container.innerHTML = '';
+    
+    // 原有渲染逻辑...
+  } catch (error) {
+    console.error('图表渲染错误:', error);
+    container.innerHTML = `<div class="chart-error">图表渲染失败: ${error.message}</div>`;
+  }
+}
+</pre>
+        </div>
+        
+        <h2>测试建议</h2>
+        <div class="card">
+            <ul>
+                <li>使用浏览器的开发者工具（F12）查看控制台输出，检查是否有任何与图表渲染相关的错误</li>
+                <li>检查图表容器的DOM元素，确认其尺寸是否正确</li>
+                <li>逐步应用上述修复方案，每次只应用一个修改，以确定哪个修改解决了问题</li>
+                <li>如果问题仍然存在，可以尝试降低ECharts版本，看是否是版本兼容性问题</li>
+            </ul>
+        </div>
+        
+        <h2>关于我们的测试</h2>
+        <p>我们创建了一个最小化的测试页面 <code>minimal-chart-test.html</code>，该页面直接从CDN引入ECharts并成功渲染了图表，证明了ECharts库本身是正常工作的。问题出在项目的集成和渲染逻辑上。</p>
+        
+        <div class="info">
+            <p>根据分析，最可能的问题是<strong>容器尺寸和渲染时机</strong>的问题。建议先实施解决方案1和3，这两个修改应该能解决大多数情况下的渲染问题。</p>
+        </div>
+    </div>
+</body>
+</html>

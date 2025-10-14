@@ -106,7 +106,7 @@ class DifyResponseParser:
         """
         
         # 统一处理字符流事件
-        if event == "text_chunk" or event == "message":
+        if event == "text_chunk" or event == "message" or event == "agent_message":
             # 处理字符流事件
             if event == "text_chunk":
                 # workflow端点的text_chunk事件
@@ -120,7 +120,7 @@ class DifyResponseParser:
                 created_at = None
                 id_value = None
             else:
-                # chat-messages端点的message事件
+                # chat-messages端点的message事件或agent_message事件
                 text = data.get("answer", "")
                 task_id = data.get("task_id")
                 message_id = data.get("message_id")
@@ -134,12 +134,85 @@ class DifyResponseParser:
                 conversation_id=request.conversation_id,
                 message_id=task_id or message_id or "",
                 metadata={
-                    "event": "text_chunk",
+                    "event": event,  # 保持原始事件类型
                     "workflow_run_id": workflow_run_id,
                     "task_id": task_id,
                     "from_variable_selector": from_variable_selector,
                     "id": id_value,
                     "created_at": created_at
+                }
+            )
+        
+        # 统一处理agent_thought事件
+        elif event == "agent_thought":
+            # 构建思考内容文本
+            thought_text = data.get("thought", "")
+            if not thought_text:
+                thought_text = data.get("observation", "")
+            
+            # 添加工具调用信息（如果有的话）
+            tool_info = ""
+            if data.get("tool") and data.get("tool_input"):
+                try:
+                    tool_input = data.get("tool_input")
+                    if isinstance(tool_input, str):
+                        tool_input = json.loads(tool_input)
+                    tool_info = f"\n\n[工具调用: {data['tool']}]\n"
+                    tool_info += f"参数: {json.dumps(tool_input, ensure_ascii=False, indent=2)}\n"
+                except Exception:
+                    # 如果tool_input不是有效的JSON，直接添加
+                    tool_info = f"\n\n[工具调用: {data['tool']}]\n"
+                    tool_info += f"参数: {data.get('tool_input', '')}\n"
+            
+            # 添加文件引用信息（如果有的话）
+            file_info = ""
+            if data.get("message_files") and isinstance(data.get("message_files"), list):
+                file_info = "\n\n[文件引用]:\n"
+                for i, file in enumerate(data["message_files"], 1):
+                    file_info += f"{i}. {file}\n"
+            
+            # 添加文件ID信息（如果有的话）
+            file_id_info = ""
+            if data.get("file_id"):
+                file_id_info = f"\n\n[文件ID]: {data['file_id']}\n"
+            
+            # 构建完整的思考内容
+            full_thought_content = thought_text + tool_info + file_info + file_id_info
+            
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("message_id"),
+                metadata={
+                    "event": event,
+                    "id": data.get("id"),
+                    "task_id": data.get("task_id"),
+                    "position": data.get("position"),
+                    "thought": data.get("thought"),
+                    "observation": data.get("observation"),
+                    "tool": data.get("tool"),
+                    "tool_input": data.get("tool_input"),
+                    "created_at": data.get("created_at"),
+                    "message_files": data.get("message_files", []),
+                    "file_id": data.get("file_id"),
+                    "conversation_id": data.get("conversation_id"),
+                    "full_thought_content": full_thought_content  # 添加完整思考内容到metadata
+                }
+            )
+        
+        # 统一处理message_file事件
+        elif event == "message_file":
+            return ChatResponse(
+                message="",
+                conversation_id=request.conversation_id,
+                message_id=data.get("id"),
+                metadata={
+                    "event": event,
+                    "id": data.get("id"),
+                    "type": data.get("type"),
+                    "belongs_to": data.get("belongs_to"),
+                    "url": data.get("url"),
+                    "conversation_id": data.get("conversation_id")
                 }
             )
         
@@ -223,6 +296,7 @@ class DifyResponseParser:
                 metadata={
                     "event": event,
                     "task_id": data.get("task_id"),
+                    "message_id": data.get("message_id"),
                     "metadata": data.get("metadata"),
                     "usage": usage,
                     "retriever_resources": data.get("retriever_resources")
@@ -238,6 +312,7 @@ class DifyResponseParser:
                 metadata={
                     "event": event,
                     "task_id": data.get("task_id"),
+                    "message_id": data.get("message_id"),
                     "audio": data.get("audio"),
                     "created_at": data.get("created_at")
                 }
@@ -251,6 +326,7 @@ class DifyResponseParser:
                 metadata={
                     "event": event,
                     "task_id": data.get("task_id"),
+                    "message_id": data.get("message_id"),
                     "audio": data.get("audio"),
                     "created_at": data.get("created_at")
                 }
@@ -264,6 +340,7 @@ class DifyResponseParser:
                 metadata={
                     "event": event,
                     "task_id": data.get("task_id"),
+                    "message_id": data.get("message_id"),
                     "created_at": data.get("created_at")
                 }
             )
@@ -276,6 +353,7 @@ class DifyResponseParser:
                 metadata={
                     "event": event,
                     "task_id": data.get("task_id"),
+                    "message_id": data.get("message_id"),
                     "status": data.get("status"),
                     "code": data.get("code"),
                     "error_message": data.get("message")

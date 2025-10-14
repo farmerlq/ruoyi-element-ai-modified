@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ECharts 完整测试页面</title>
+  <!-- 引入 ECharts -->
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+      color: #333;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      text-align: center;
+      color: #1890ff;
+      margin-bottom: 30px;
+    }
+    h2 {
+      color: #333;
+      margin-top: 40px;
+      border-bottom: 2px solid #1890ff;
+      padding-bottom: 10px;
+    }
+    .chart-section {
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .chart-container {
+      width: 100%;
+      height: 400px;
+      margin: 20px 0;
+      border: 1px solid #e8e8e8;
+      border-radius: 4px;
+    }
+    .min-size-container {
+      width: 0;
+      height: 0;
+      overflow: hidden;
+      transition: width 1s ease, height 1s ease;
+    }
+    .min-size-container.expanded {
+      width: 100%;
+      height: 400px;
+    }
+    .btn {
+      display: inline-block;
+      padding: 8px 16px;
+      background: #1890ff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      margin: 10px 0;
+    }
+    .btn:hover {
+      background: #40a9ff;
+    }
+    .log-container {
+      background: #f0f0f0;
+      padding: 15px;
+      border-radius: 4px;
+      font-family: 'Courier New', Courier, monospace;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+      margin-top: 10px;
+    }
+    .log-item {
+      margin: 5px 0;
+      padding: 2px 0;
+    }
+    .log-info {
+      color: #333;
+    }
+    .log-success {
+      color: #52c41a;
+    }
+    .log-warning {
+      color: #faad14;
+    }
+    .log-error {
+      color: #f5222d;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ECharts 完整测试页面</h1>
+    
+    <!-- 测试1：正常容器中的图表 -->
+    <div class="chart-section">
+      <h2>测试1：正常容器中的图表</h2>
+      <p>这个测试验证在具有正常尺寸的容器中渲染图表。</p>
+      <div id="normalChart" class="chart-container"></div>
+    </div>
+    
+    <!-- 测试2：初始尺寸为0的容器 -->
+    <div class="chart-section">
+      <h2>测试2：初始尺寸为0的容器（可展开）</h2>
+      <p>这个测试验证在初始尺寸为0的容器中渲染图表，然后通过动画展开容器。</p>
+      <div id="zeroSizeContainer" class="min-size-container">
+        <div id="zeroSizeChart" class="chart-container"></div>
+      </div>
+      <button class="btn" id="expandBtn">展开容器</button>
+    </div>
+    
+    <!-- 测试3：动态创建的容器 -->
+    <div class="chart-section">
+      <h2>测试3：动态创建的容器</h2>
+      <p>这个测试验证在动态创建的容器中渲染图表。</p>
+      <div id="dynamicContainerParent"></div>
+      <button class="btn" id="createDynamicChartBtn">创建动态图表</button>
+    </div>
+    
+    <!-- 测试4：调整窗口大小时的自适应 -->
+    <div class="chart-section">
+      <h2>测试4：窗口大小变化的自适应</h2>
+      <p>这个测试验证窗口大小变化时图表的自适应能力。</p>
+      <div id="responsiveChart" class="chart-container"></div>
+    </div>
+    
+    <!-- 调试日志 -->
+    <div class="chart-section">
+      <h2>调试日志</h2>
+      <div id="debugLog" class="log-container"></div>
+    </div>
+  </div>
+
+  <script>
+    // 日志记录函数
+    function log(message, type = 'info') {
+      const logContainer = document.getElementById('debugLog');
+      const logItem = document.createElement('div');
+      logItem.className = `log-item log-${type}`;
+      const timestamp = new Date().toLocaleTimeString();
+      logItem.textContent = `[${timestamp}] ${message}`;
+      logContainer.appendChild(logItem);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    // 基础图表配置
+    const basicChartOption = {
+      title: {
+        text: 'ECharts 测试图表',
+        left: 'center'
+      },
+      tooltip: {
+        trigger: 'axis'
+      },
+      legend: {
+        data: ['销量', '利润'],
+        bottom: 10
+      },
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '15%',
+        top: '15%',
+        containLabel: true
+      },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+      },
+      yAxis: {
+        type: 'value'
+      },
+      series: [
+        {
+          name: '销量',
+          type: 'line',
+          stack: 'Total',
+          data: [120, 132, 101, 134, 90, 230, 210]
+        },
+        {
+          name: '利润',
+          type: 'line',
+          stack: 'Total',
+          data: [220, 182, 191, 234, 290, 330, 310]
+        }
+      ]
+    };
+
+    // 创建简单图表渲染函数
+    function renderSimpleChart(containerId, options) {
+      try {
+        log(`开始渲染图表: ${containerId}`, 'info');
+        const container = document.getElementById(containerId);
+        
+        // 检查容器是否存在
+        if (!container) {
+          log(`容器不存在: ${containerId}`, 'error');
+          return null;
+        }
+        
+        // 检查容器是否在DOM中
+        if (!document.contains(container)) {
+          log(`容器不在DOM中: ${containerId}`, 'warning');
+          return null;
+        }
+        
+        // 检查容器尺寸
+        const rect = container.getBoundingClientRect();
+        log(`容器尺寸: ${containerId} - 宽度: ${rect.width}, 高度: ${rect.height}`, 'info');
+        
+        // 创建图表实例
+        const chart = echarts.init(container);
+        log(`图表实例创建成功: ${containerId}`, 'success');
+        
+        // 设置图表选项
+        chart.setOption(options);
+        log(`图表选项设置完成: ${containerId}`, 'success');
+        
+        // 添加窗口大小变化监听
+        window.addEventListener('resize', function() {
+          if (chart && !chart.isDisposed()) {
+            chart.resize();
+            log(`图表已调整大小: ${containerId}`, 'info');
+          }
+        });
+        
+        // 处理容器尺寸为0的情况
+        if (rect.width === 0 || rect.height === 0) {
+          log(`容器尺寸为0，添加尺寸变化监听: ${containerId}`, 'warning');
+          const resizeObserver = new ResizeObserver(entries => {
+            const entry = entries[0];
+            if (entry.contentRect.width > 0 && entry.contentRect.height > 0) {
+              if (chart && !chart.isDisposed()) {
+                chart.resize();
+                chart.setOption(options);
+                log(`图表因尺寸变化重新渲染: ${containerId}`, 'success');
+              }
+              resizeObserver.unobserve(container);
+            }
+          });
+          resizeObserver.observe(container);
+        }
+        
+        // 延时重新渲染
+        setTimeout(() => {
+          if (chart && !chart.isDisposed()) {
+            chart.resize();
+            chart.setOption(options);
+            log(`图表二次渲染完成: ${containerId}`, 'info');
+          }
+        }, 100);
+        
+        return chart;
+      } catch (error) {
+        log(`图表渲染失败: ${containerId}, 错误: ${error.message}`, 'error');
+        return null;
+      }
+    }
+
+    // 测试1: 正常容器中的图表
+    const normalChart = renderSimpleChart('normalChart', basicChartOption);
+
+    // 测试2: 初始尺寸为0的容器
+    const zeroSizeChart = renderSimpleChart('zeroSizeChart', basicChartOption);
+    
+    // 展开按钮事件
+    document.getElementById('expandBtn').addEventListener('click', function() {
+      const container = document.getElementById('zeroSizeContainer');
+      container.classList.add('expanded');
+      log('展开容器按钮被点击', 'info');
+      
+      // 展开后重新调整图表大小
+      setTimeout(() => {
+        if (zeroSizeChart && !zeroSizeChart.isDisposed()) {
+          zeroSizeChart.resize();
+          log('展开后图表已调整大小', 'success');
+        }
+      }, 1000);
+    });
+
+    // 测试3: 动态创建的容器
+    document.getElementById('createDynamicChartBtn').addEventListener('click', function() {
+      log('创建动态图表按钮被点击', 'info');
+      
+      // 创建容器
+      const dynamicContainer = document.createElement('div');
+      dynamicContainer.id = 'dynamicChartContainer';
+      dynamicContainer.className = 'chart-container';
+      
+      // 添加到父容器
+      const parent = document.getElementById('dynamicContainerParent');
+      parent.appendChild(dynamicContainer);
+      log('动态容器已创建并添加到DOM', 'info');
+      
+      // 渲染图表
+      setTimeout(() => {
+        const dynamicChart = renderSimpleChart('dynamicChartContainer', basicChartOption);
+      }, 100);
+    });
+
+    // 测试4: 窗口大小变化的自适应
+    const responsiveChart = renderSimpleChart('responsiveChart', {
+      ...basicChartOption,
+      title: {
+        text: '响应式测试图表',
+        left: 'center'
+      },
+      animationDuration: 1000
+    });
+
+    // 初始日志
+    log('页面加载完成，开始图表测试', 'info');
+    log('当前ECharts版本: ' + echarts.version, 'info');
+  </script>
+</body>
+</html>

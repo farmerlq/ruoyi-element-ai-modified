@@ -10,6 +10,7 @@ class MessageBase(BaseModel):
     agent_id: int
     role: str
     content: str
+    thought_content: Optional[str] = None  # 添加thought_content字段
     message_metadata: Optional[Dict[str, Any]] = None
     cost: Optional[float] = 0.0
     total_tokens: Optional[int] = 0
@@ -33,6 +34,7 @@ class MessageUpdate(BaseModel):
     agent_id: Optional[int] = None
     role: Optional[str] = None
     content: Optional[str] = None
+    thought_content: Optional[str] = None  # 添加thought_content字段
     message_metadata: Optional[Dict[str, Any]] = None
     cost: Optional[float] = None
     total_tokens: Optional[int] = None

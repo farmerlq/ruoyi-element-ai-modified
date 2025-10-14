@@ -105,6 +105,7 @@ class ChatService:
         
         # 用于收集所有流式响应
         full_message = ""
+        thought_content = ""
         workflow_events = []
         conversation_id = None
         message_id = None
@@ -116,11 +117,41 @@ class ChatService:
                 if response.message:
                     full_message += response.message
                 
-                # 收集工作流事件 - 只收集真正的工作流相关事件
-                if response.metadata and "event" in response.metadata:
+                # 收集思考内容（agent_thought事件）
+                if response.metadata and response.metadata.get("event") == "agent_thought":
+                    thought_data = response.metadata
+                    # 构建思考内容文本
+                    thought_text = thought_data.get("thought", "")
+                    
+                    # 添加工具调用信息（如果有的话）
+                    if thought_data.get("tool") and thought_data.get("tool_input"):
+                        try:
+                            tool_input = thought_data.get("tool_input")
+                            if isinstance(tool_input, str):
+                                tool_input = json.loads(tool_input)
+                            thought_text += f"\n\n[工具调用: {thought_data['tool']}]\n"
+                            thought_text += f"参数: {json.dumps(tool_input, ensure_ascii=False, indent=2)}\n"
+                        except Exception:
+                            # 如果tool_input不是有效的JSON，直接添加
+                            thought_text += f"\n\n[工具调用: {thought_data['tool']}]\n"
+                            thought_text += f"参数: {thought_data.get('tool_input', '')}\n"
+                    
+                    # 添加文件引用信息（如果有的话）
+                    if thought_data.get("message_files") and isinstance(thought_data["message_files"], list):
+                        thought_text += "\n\n[文件引用]:\n"
+                        for i, file in enumerate(thought_data["message_files"], 1):
+                            thought_text += f"{i}. {file}\n"
+                    
+                    # 添加文件ID信息（如果有的话）
+                    if thought_data.get("file_id"):
+                        thought_text += f"\n\n[文件ID]: {thought_data['file_id']}\n"
+                    
+                    thought_content += thought_text + "\n"
+                # 收集工作流事件 - 只收集真正的工作流相关事件，排除text_chunk、message和agent_thought事件
+                elif response.metadata and "event" in response.metadata:
                     event_type = response.metadata.get("event")
-                    # 只收集工作流相关事件，排除text_chunk和message事件
-                    if event_type and ("workflow" in event_type or "node" in event_type):
+                    # 只收集工作流相关事件，排除text_chunk、message和agent_thought事件
+                    if event_type and event_type != "agent_thought" and ("workflow" in event_type or "node" in event_type or event_type in ["message_end", "message_file"]):
                         workflow_events.append(response.metadata)
                 
                 # 保存消息ID（优先保留第一个非None的值）
@@ -130,6 +161,12 @@ class ChatService:
                 
                 # 实时yield每个响应事件
                 yield response
+                
+            # 流结束后保存对话和消息到数据库
+            self._save_conversation_and_message_stream(request, full_message, thought_content, workflow_events, agent)
+        except Exception as e:
+            # 记录错误但不中断流式传输
+            print(f"流式聊天处理出错: {e}")
         finally:
             # 关闭适配器连接（如果有的话）
             # BaseAdapter定义了close抽象方法，所以我们可以安全地调用它
@@ -138,7 +175,7 @@ class ChatService:
             except Exception as e:
                 pass
     
-    def _save_conversation_and_message_stream(self, request: ChatRequest, full_message: str, workflow_events: list, agent):
+    def _save_conversation_and_message_stream(self, request: ChatRequest, full_message: str, thought_content: str, workflow_events: list, agent):
         """保存流式对话和消息到数据库"""
         try:
             # 生成对话ID（如果有会话ID，强制使用传参的会话ID；如果没有会话ID就可以有解析出来的会话ID；如果都没有的话就新建会话ID）
@@ -214,6 +251,7 @@ class ChatService:
                 agent_id=request.agent_id,
                 role="agent",
                 content=full_message,  # 确保保存完整的流式响应内容
+                thought_content=thought_content,  # 保存思考内容
                 message_metadata=metadata_for_storage,
                 workflow_events=workflow_events if workflow_events else None,
                 cost=cost,
@@ -274,9 +312,10 @@ class ChatService:
             # 保存AI回复消息（总是保存，即使内容为空）
             # 提取workflow_events（如果有的话）
             workflow_events = []
+            thought_content = ""
             metadata_for_storage = response.metadata
-            
-            # 处理workflow_events
+
+            # 处理workflow_events和thought_content
             if response.metadata and "workflow_events" in response.metadata:
                 workflow_events = response.metadata["workflow_events"]
                 # 从message_metadata中移除workflow_events数据，避免重复存储
@@ -284,12 +323,22 @@ class ChatService:
             elif response.metadata and "event" in response.metadata:
                 # 如果是单个工作流事件，保存到workflow_events字段
                 event_type = response.metadata.get("event")
-                # 只保存真正的工作流相关事件，排除text_chunk和message事件
-                if event_type and ("workflow" in event_type or "node" in event_type):
+                # 只保存真正的工作流相关事件，排除text_chunk、message和agent_thought事件
+                if event_type and event_type != "agent_thought" and ("workflow" in event_type or "node" in event_type or event_type in ["message_end", "message_file"]):
                     workflow_events = [response.metadata]
                     # 从message_metadata中移除工作流事件数据，避免重复存储
                     metadata_for_storage = None
-            
+                elif event_type == "agent_thought":
+                    thought_content = response.metadata.get("thought", "")
+                    # 不将agent_thought事件添加到workflow_events中
+                    metadata_for_storage = None
+            elif response.metadata:
+                # 处理没有"event"字段但有metadata的情况
+                # 检查是否包含thought_content字段
+                if "thought_content" in response.metadata:
+                    thought_content = response.metadata.get("thought_content", "")
+                    metadata_for_storage = None
+        
             # 计算token和费用
             # 优先使用response.total_tokens的值，如果不存在则使用total_tokens_estimated
             total_tokens = response.total_tokens if hasattr(response, 'total_tokens') and response.total_tokens is not None else response.total_tokens_estimated
@@ -304,19 +353,19 @@ class ChatService:
                         workflow_events_length = len(workflow_events_str)
                     except Exception:
                         workflow_events_length = 0
-                
+        
                 # 计算content_tokens和workflow_tokens
                 content_tokens = max(1, content_length // 4)
                 workflow_tokens = max(1, workflow_events_length // 4) if workflow_events_length > 0 else 1
                 total_tokens = content_tokens + workflow_tokens
             else:
                 total_tokens = max(0, total_tokens)
-            
+        
             # 计算费用（按照每百万token 12元的价格）
             cost = 0.0
             if total_tokens > 0:
                 cost = (total_tokens / 1000000) * 12
-            
+        
             ai_message = Message(
                 conversation_id=conversation_id,
                 merchant_id=request.merchant_id,
@@ -324,11 +373,12 @@ class ChatService:
                 agent_id=request.agent_id,
                 role="agent",
                 content=response.message or "",  # 确保content不为None
+                thought_content=thought_content,  # 保存思考内容
                 message_metadata=metadata_for_storage,
                 workflow_events=workflow_events if workflow_events else None,
                 cost=cost,
                 total_tokens=total_tokens,
-                total_tokens_estimated=response.total_tokens_estimated  # 确保保存估算的token数
+                total_tokens_estimated=response.total_tokens_estimated or total_tokens  # 确保保存估算的token数
             )
             self.db.add(ai_message)
             

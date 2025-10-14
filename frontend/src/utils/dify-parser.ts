@@ -218,6 +218,7 @@ export class DifyRenderer {
 
     switch (event) {
       case 'message':
+      case 'agent_message':
       case 'text_chunk': {
         let content = '';
 
@@ -276,6 +277,26 @@ export class DifyRenderer {
         break;
       }
 
+      case 'agent_thought': {
+        // 处理思考事件 - 只传递给工作流回调，避免重复显示
+        // 提取工具调用信息
+        const toolInfo = {
+          name: data.tool || '',
+          input: data.tool_input ? JSON.stringify(data.tool_input, null, 2) : '',
+          observation: data.observation || ''
+        };
+        
+        if (this.onWorkflowEventCallback) {
+          this.onWorkflowEventCallback({
+            event: 'agent_thought',
+            data: data,
+            message: data.thought || data.observation || '',
+            toolInfo: toolInfo
+          });
+        }
+        break;
+      }
+
       case 'message_end': {
         // 不再传递空字符串，避免在UI中出现额外内容
         if (this.onWorkflowEventCallback) {
@@ -314,7 +335,7 @@ export class DifyRenderer {
 
       default:
         // 其他未知事件 - 根据事件类型决定传递给哪个回调
-        if (event && (event.includes('workflow') || event.includes('node'))) {
+        if (event && (event.includes('workflow') || event.includes('node') || event === 'agent_thought')) {
           if (this.onWorkflowEventCallback) {
             // 对于工作流相关事件，传递完整的data对象，而不仅仅是data.data
             // 这样前端可以访问所有可能的字段
@@ -323,13 +344,13 @@ export class DifyRenderer {
               // 对于workflow_finished等特殊事件，直接使用data
               // 对于其他事件，合并data和data.data，确保不丢失任何信息
               data: Object.assign({}, data, data.data || {}),
-              message: data.message || data.text || '',
+              message: data.message || data.text || data.thought || '',
             });
           }
         }
         else {
           // 尝试从数据中提取可能的内容
-          const possibleContent = data.text || data.data?.content || data.data?.text || '';
+          const possibleContent = data.text || data.data?.content || data.data?.text || data.answer || '';
           if (possibleContent) {
             if (this.onDataCallback) {
               this.onDataCallback(possibleContent, data);

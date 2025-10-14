@@ -11,7 +11,6 @@ import AgentSelect from '@/components/AgentSelect/index.vue';
 import FilesSelect from '@/components/FilesSelect/index.vue';
 import MessageActions from '@/components/MessageActions/index.vue';
 import EnhancedMarkdown from '@/components/EnhancedMarkdown/index.vue';
-import WorkflowEvents from '@/components/WorkflowEvents/index.vue';
 import ThinkingProcess from '@/components/ThinkingProcess/index.vue';
 import { useAgentStore } from '@/stores/modules/agent';
 import { useChatStore } from '@/stores/modules/chat';
@@ -103,11 +102,6 @@ interface MessageItem extends BubbleListItemProps {
   thinkingCollapse?: boolean;
   reason_content?: string;
   reasoning_content?: string;
-  toolInfo?: {
-    name: string;
-    input: string;
-    observation: string;
-  };
   workflowEvents?: WorkflowEventItem[];
   workflowEventsCollapsed?: boolean;
   workflow_events?: any[]; // 添加这个属性以匹配chatStore的类型要求
@@ -299,31 +293,6 @@ function handleDataChunk(chunk: any) {
         // DifyRenderer传递了包含event、data和message字段的完整对象
         const eventType = workflowEvent.event || 'unknown';
 
-        // 特殊处理agent_thought事件（思考过程）
-        if (eventType === 'agent_thought') {
-          // 更新当前消息的reasoning_content
-          const thoughtContent = workflowEvent.message || '';
-          if (thoughtContent) {
-            const index = bubbleItems.value.length - 1;
-            const updatedItem = {
-              ...lastItem,
-              reasoning_content: (lastItem.reasoning_content || '') + '\n' + thoughtContent,
-              toolInfo: workflowEvent.toolInfo,
-              // 添加一个版本号属性，每次更新内容时递增，确保组件重新渲染
-              renderVersion: (lastItem.renderVersion || 0) + 1,
-            };
-            
-            // 替换整个数组以确保响应式系统检测到变化
-            const newBubbleItems = [...bubbleItems.value];
-            newBubbleItems[index] = updatedItem;
-            bubbleItems.value = newBubbleItems;
-            
-            // 立即滚动到底部，确保用户实时看到内容
-            bubbleListRef.value?.scrollToBottom();
-          }
-          return;
-        }
-
         // 格式化事件消息
         const eventMessages: Record<string, string> = {
           workflow_started: '开始理解你的语义',
@@ -440,31 +409,6 @@ function appendContent(content: string) {
     renderVersion: (lastItem.renderVersion || 0) + 1,
     // 确保 isMarkdown 为 true，以便使用 EnhancedMarkdown 组件渲染
     isMarkdown: true,
-  };
-
-  // 替换整个数组以确保响应式系统检测到变化
-  const newBubbleItems = [...bubbleItems.value];
-  newBubbleItems[index] = updatedItem;
-  bubbleItems.value = newBubbleItems;
-
-  // 立即滚动到底部，确保用户实时看到内容
-  bubbleListRef.value?.scrollToBottom();
-}
-
-// 追加思考内容到消息并触发BubbleList更新
-function appendReasoningContent(content: string) {
-  const lastItem = bubbleItems.value[bubbleItems.value.length - 1];
-  if (!lastItem || !content)
-    return;
-
-  const index = bubbleItems.value.length - 1;
-
-  // 创建新对象确保响应式更新
-  const updatedItem = {
-    ...lastItem,
-    reasoning_content: (lastItem.reasoning_content || '') + '\n' + content,
-    // 添加一个版本号属性，每次更新内容时递增，确保组件重新渲染
-    renderVersion: (lastItem.renderVersion || 0) + 1,
   };
 
   // 替换整个数组以确保响应式系统检测到变化
@@ -1097,9 +1041,8 @@ watch(
         >
           <template #header="{ item }">
             <ThinkingProcess
-              v-if="(item as MessageItem).reasoning_content"
+              v-if="(item as MessageItem).reasoning_content" 
               :thinking-content="(item as MessageItem).reasoning_content || ''"
-              :tool-info="(item as MessageItem).toolInfo"
             />
           </template>
 
@@ -1125,11 +1068,33 @@ watch(
               </div>
             </div>
 
-            <!-- 使用独立的工作流事件组件 -->
-            <WorkflowEvents 
-              v-if="item.workflowEvents && item.workflowEvents.length > 0" 
-              :workflow-events="item.workflowEvents" 
-            />
+            <!-- 将工作流事件移动到content模板中，确保它们能够正确显示在消息下方 -->
+            <!-- 工作流事件展示区域 -->
+            <div v-if="(item as MessageItem).workflowEvents && (item as MessageItem).workflowEvents!.length > 0" class="workflow-events-container">
+              <div class="workflow-events-toggle" @click="toggleWorkflowEvents(item as MessageItem)">
+                <span class="workflow-events-label">
+                  {{ (item as MessageItem).workflowEventsCollapsed ? '▼' : '▲' }} 工作流事件 ({{ (item as MessageItem).workflowEvents!.length }})
+                </span>
+              </div>
+
+              <div v-if="!(item as MessageItem).workflowEventsCollapsed" class="workflow-events-content">
+                <div v-for="(event, index) in (item as MessageItem).workflowEvents" :key="index" class="workflow-event-item">
+                  <div class="event-header">
+                    <span class="event-type">{{ event.type || event.event }}:</span>
+                    <span class="event-message">{{ event.message }}</span>
+                    <span
+                      v-if="event.data && Object.keys(event.data).length > 0" class="event-data-toggle"
+                      @click.stop="toggleEventData(item as MessageItem, index)"
+                    >
+                      {{ event.dataCollapsed ? '▼' : '▲' }}
+                    </span>
+                  </div>
+                  <div v-if="event.data && Object.keys(event.data).length > 0 && !event.dataCollapsed" class="event-data">
+                    {{ JSON.stringify(event.data, null, 2) }}
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <!-- 显示token和花费统计信息 -->
             <div v-if="(((item as MessageItem).totalTokens || 0) > 0 || ((item as MessageItem).totalCost || 0) > 0) && (item as MessageItem).role === 'agent'" class="token-cost-info">

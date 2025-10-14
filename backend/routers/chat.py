@@ -31,7 +31,9 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
     total_sse_length = 0   # 新增：统计完整的SSE数据长度（包括data:前缀）
     total_tokens = 0
     workflow_events = []
+    thought_content = ""   # 收集思考内容
     full_message_content = ""  # 收集完整的消息内容
+    message_events_received = set()  # 用于跟踪已接收的消息事件ID，避免重复
     
     try:
         # 实时转发所有流式响应事件
@@ -44,19 +46,67 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
                 event_type = response.metadata.get('event')
                 event_types[event_type] = event_types.get(event_type, 0) + 1
                 
-                # 收集工作流事件用于token统计
-                if event_type and ("workflow" in event_type or "node" in event_type):
+                # 为消息事件生成唯一标识符
+                message_event_id = None
+                if event_type in ['text_chunk', 'message', 'agent_message'] and response.message_id:
+                    message_event_id = f"{event_type}:{response.message_id}"
+                
+                # 收集工作流事件用于token统计和保存（不包括agent_thought事件）
+                if event_type and event_type != "agent_thought" and ("workflow" in event_type or "node" in event_type or event_type in ["message_end", "message_file"]):
                     workflow_events.append(response.metadata)
                 
+                # 收集思考内容（仅针对agent_thought事件）
+                if event_type == "agent_thought":
+                    thought_data = response.metadata
+                    # 获取完整的思考内容（如果有的话）
+                    full_thought_content = thought_data.get("full_thought_content", "")
+                    if full_thought_content and full_thought_content.strip():
+                        thought_content += full_thought_content + "\n"
+                    else:
+                        # 构建思考内容文本
+                        thought_text = thought_data.get("thought", "")
+                        if not thought_text:
+                            thought_text = thought_data.get("observation", "")
+                        
+                        # 添加工具调用信息（如果有的话）
+                        if thought_data.get("tool") and thought_data.get("tool_input"):
+                            try:
+                                tool_input = thought_data.get("tool_input")
+                                if isinstance(tool_input, str):
+                                    tool_input = json.loads(tool_input)
+                                thought_text += f"\n\n[工具调用: {thought_data['tool']}]\n"
+                                thought_text += f"参数: {json.dumps(tool_input, ensure_ascii=False, indent=2)}\n"
+                            except Exception:
+                                # 如果tool_input不是有效的JSON，直接添加
+                                thought_text += f"\n\n[工具调用: {thought_data['tool']}]\n"
+                                thought_text += f"参数: {thought_data.get('tool_input', '')}\n"
+                        
+                        # 添加文件引用信息（如果有的话）
+                        if thought_data.get("message_files") and isinstance(thought_data["message_files"], list):
+                            thought_text += "\n\n[文件引用]:\n"
+                            for i, file in enumerate(thought_data["message_files"], 1):
+                                thought_text += f"{i}. {file}\n"
+                        
+                        # 添加文件ID信息（如果有的话）
+                        if thought_data.get("file_id"):
+                            thought_text += f"\n\n[文件ID]: {thought_data['file_id']}\n"
+                        
+                        # 只有当thought_text有实际内容时才添加到thought_content中
+                        if thought_text and thought_text.strip():
+                            thought_content += thought_text + "\n"
+                
                 event_data = response.metadata.copy()
-                # 对于text_chunk事件，确保包含content字段
-                if event_data.get('event') == 'text_chunk' and response.message:
+                # 对于text_chunk/message/agent_message事件，确保包含content字段
+                if event_data.get('event') in ['text_chunk', 'message', 'agent_message'] and response.message:
                     event_data['content'] = response.message
                     # 统计所有消息内容长度
                     total_message_length += len(response.message)
                     total_data_length += len(response.message)  # 统计数据内容
-                    # 收集消息内容
-                    full_message_content += response.message
+                    # 收集消息内容（避免重复）
+                    message_event_key = f"{event_data.get('event')}_{response.message_id or ''}"
+                    if message_event_key not in message_events_received:
+                        message_events_received.add(message_event_key)
+                        full_message_content += response.message
                 
                 # 统计所有事件类型的metadata数据长度
                 metadata_json = json.dumps(response.metadata)
@@ -148,7 +198,7 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
         # 注意：这里我们使用的是前端显示的total_tokens_estimated和cost
         try:
             # 保存统计信息到数据库
-            save_chat_statistics(db, request, total_tokens_estimated, cost, workflow_events, full_message_content)
+            save_chat_statistics(db, request, total_tokens_estimated, cost, workflow_events, thought_content, full_message_content)
         except Exception as e:
             logging.error(f"Error saving chat statistics to database: {e}")
         
@@ -171,7 +221,7 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
 
-def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimated: int, cost: float, workflow_events: list, full_message_content: str = ""):
+def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimated: int, cost: float, workflow_events: list, thought_content: str, full_message_content: str = ""):
     """保存聊天统计数据到数据库"""
     try:
         # 生成对话ID（如果有会话ID，强制使用传参的会话ID；如果没有会话ID就可以有解析出来的会话ID；如果都没有的话就新建会话ID）
@@ -201,33 +251,51 @@ def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimat
             # 不需要手动设置 updated_at = None，SQLAlchemy 会自动处理
             db.commit()
         
-        # 保存用户消息
-        user_query = request.get_query_text() or ""
+        # 检查是否已经存在相同对话ID的用户消息，避免重复保存
+        existing_user_message = db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+            Message.role == "user",
+            Message.content == (request.get_query_text() or "")
+        ).first()
         
-        user_message = Message(
-            conversation_id=conversation_id,
-            merchant_id=request.merchant_id,
-            user_id=request.user_id,
-            agent_id=request.agent_id,
-            role="user",
-            content=user_query
-        )
-        db.add(user_message)
+        # 只有当不存在相同用户消息时才保存用户消息
+        if not existing_user_message:
+            # 保存用户消息
+            user_query = request.get_query_text() or ""
+            
+            user_message = Message(
+                conversation_id=conversation_id,
+                merchant_id=request.merchant_id,
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                role="user",
+                content=user_query
+            )
+            db.add(user_message)
         
-        # 保存AI回复消息
-        ai_message = Message(
-            conversation_id=conversation_id,
-            merchant_id=request.merchant_id,
-            user_id=request.user_id,
-            agent_id=request.agent_id,
-            role="agent",
-            content=full_message_content,  # 保存完整的消息内容
-            workflow_events=workflow_events if workflow_events else None,
-            cost=cost,
-            total_tokens=total_tokens_estimated,  # 使用前端显示的估算值
-            total_tokens_estimated=total_tokens_estimated
-        )
-        db.add(ai_message)
+        # 检查是否已经存在相同对话ID的AI消息，避免重复保存
+        existing_ai_message = db.query(Message).filter(
+            Message.conversation_id == conversation_id,
+            Message.role == "agent"
+        ).order_by(Message.id.desc()).first()
+        
+        # 只有当不存在相同AI消息时才保存AI回复消息
+        if not existing_ai_message:
+            # 保存AI回复消息
+            ai_message = Message(
+                conversation_id=conversation_id,
+                merchant_id=request.merchant_id,
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                role="agent",
+                content=full_message_content,  # 保存完整的消息内容
+                thought_content=thought_content if thought_content and thought_content.strip() else None,  # 保存思考内容
+                workflow_events=workflow_events if workflow_events else None,
+                cost=cost,
+                total_tokens=total_tokens_estimated,  # 使用前端显示的估算值
+                total_tokens_estimated=total_tokens_estimated
+            )
+            db.add(ai_message)
         
         db.commit()
     except Exception as e:

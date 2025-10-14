@@ -207,77 +207,103 @@ class DifyParser:
                         message_content = data.get("answer", "")
                         workflow_run_id = data.get("conversation_id")
                         
-                        # 复制data对象并修改，使其符合原生text_chunk事件结构
-                        transformed_data = data.copy()
-                        transformed_data["event"] = "text_chunk"  # 确保event字段正确
-                        transformed_data["workflow_run_id"] = workflow_run_id  # 添加workflow_run_id
-                        transformed_data["task_id"] = data.get("task_id", "")  # 添加task_id字段
-                        transformed_data["text"] = message_content  # 前端直接从顶级data对象获取text字段
-                        
-                        # 与原生text_chunk事件保持一致的data结构
-                        if "data" not in transformed_data:
-                            transformed_data["data"] = {}
-                        transformed_data["data"]["text"] = message_content
-                        transformed_data["data"]["from_variable_selector"] = []  # 符合原生结构
-                        
+                        # 保持message事件不变，不转换为text_chunk
                         response = DifyParser._create_text_chunk_response(
-                            transformed_data,  # 使用修改后的数据对象
-                            "text_chunk",  # 将事件类型修改为text_chunk
-                            message_content,  # 保留原始消息内容
-                            "workflow_run_id",  # 与原生text_chunk事件使用相同的conversation_id_key
+                            data,
+                            "message",  # 保持原始事件类型
+                            message_content,
+                            "conversation_id",
                             {
                                 "workflow_run_id": workflow_run_id,
                                 "text": message_content,
-                                "from_variable_selector": [],
                                 "original_event": "message",
                                 "id": data.get("id"),
                                 "created_at": data.get("created_at")
                             }
                         )
                         
-                        # 转换message事件为text_chunk事件
+                        yield response
+                    
+                    # 2. 处理 agent_message 事件 - Agent模式下返回文本块事件
+                    elif event == "agent_message":
+                        # 从agent_message事件中提取文本内容
+                        message_content = data.get("answer", "")
+                        workflow_run_id = data.get("conversation_id")
+                        
+                        response = DifyParser._create_text_chunk_response(
+                            data,
+                            "agent_message",  # 保持原始事件类型
+                            message_content,
+                            "conversation_id",
+                            {
+                                "workflow_run_id": workflow_run_id,
+                                "text": message_content,
+                                "original_event": "agent_message",
+                                "id": data.get("id"),
+                                "created_at": data.get("created_at")
+                            }
+                        )
                         
                         yield response
                     
-                    # 2. 处理 message_end 事件 - 消息结束事件
+                    # 3. 处理 agent_thought 事件 - Agent模式下有关Agent思考步骤的相关内容
+                    elif event == "agent_thought":
+                        # 构造符合agent_thought格式的数据结构
+                        yield ChatResponse(
+                            message="",  # 思考事件消息内容为空，不将思考内容放入message字段
+                            conversation_id=data.get("conversation_id"),
+                            message_id=data.get("message_id"),
+                            metadata={
+                                "event": event,
+                                "id": data.get("id"),
+                                "task_id": data.get("task_id"),
+                                "position": data.get("position"),
+                                "thought": data.get("thought"),
+                                "observation": data.get("observation"),
+                                "tool": data.get("tool"),
+                                "tool_input": data.get("tool_input"),
+                                "created_at": data.get("created_at"),
+                                "message_files": data.get("message_files", []),
+                                "file_id": data.get("file_id"),
+                                "conversation_id": data.get("conversation_id")
+                            }
+                        )
+                    
+                    # 4. 处理 message_file 事件 - 文件事件，表示有新文件需要展示
+                    elif event == "message_file":
+                        yield ChatResponse(
+                            message="",
+                            conversation_id=data.get("conversation_id"),
+                            message_id=data.get("id"),
+                            metadata={
+                                "event": event,
+                                "id": data.get("id"),
+                                "type": data.get("type"),
+                                "belongs_to": data.get("belongs_to"),
+                                "url": data.get("url"),
+                                "conversation_id": data.get("conversation_id")
+                            }
+                        )
+                    
+                    # 5. 处理 message_end 事件 - 消息结束事件
                     elif event == "message_end":
-                        # 消息结束事件 - 统一解析为与workflow_finished相似的格式，便于前端处理
-                        # 构造符合workflow_finished格式的数据结构
-                        workflow_data = {
-                            "status": "succeeded",  # 默认为成功状态
-                            "elapsed_time": None,
-                            "total_tokens": None,
-                            "total_steps": 1,  # 普通聊天可以视为单步操作
-                            "finished_at": data.get("created_at"),
-                            "error": ""
-                        }
-                        
-                        # 如果有usage信息，提取token数量
-                        if data.get("usage"):
-                            workflow_data["total_tokens"] = data.get("usage").get("total_tokens")
-                        
-                        # 构造与workflow_finished相同的event和metadata
+                        # 消息结束事件
                         yield ChatResponse(
                             message="",  # 结束事件消息内容为空
                             conversation_id=data.get("conversation_id"),
                             message_id=data.get("message_id"),
                             metadata={
-                                "event": "workflow_finished",  # 将事件类型修改为workflow_finished
+                                "event": event,
                                 "task_id": data.get("task_id"),
-                                "status": workflow_data["status"],
-                                "elapsed_time": workflow_data["elapsed_time"],
-                                "total_tokens": workflow_data["total_tokens"],
-                                "total_steps": workflow_data["total_steps"],
-                                "finished_at": workflow_data["finished_at"],
-                                "error": workflow_data["error"],
-                                "original_event": "message_end",  # 保留原始事件类型用于追踪
+                                "message_id": data.get("message_id"),
+                                "conversation_id": data.get("conversation_id"),
                                 "metadata": data.get("metadata"),
                                 "usage": data.get("usage"),
                                 "retriever_resources": data.get("retriever_resources")
                             }
                         )
                     
-                    # 3. 处理 tts_message 事件 - TTS 音频流事件
+                    # 6. 处理 tts_message 事件 - TTS 音频流事件
                     elif event == "tts_message":
                         # TTS 音频流事件，即语音合成输出
                         # 内容是Mp3格式的音频块，使用 base64 编码后的字符串
@@ -288,12 +314,13 @@ class DifyParser:
                             metadata={
                                 "event": event,
                                 "task_id": data.get("task_id"),
+                                "message_id": data.get("message_id"),
                                 "audio": data.get("audio"),
                                 "created_at": data.get("created_at")
                             }
                         )
                     
-                    # 4. 处理 tts_message_end 事件 - TTS 音频流结束事件
+                    # 7. 处理 tts_message_end 事件 - TTS 音频流结束事件
                     elif event == "tts_message_end":
                         # TTS 音频流结束事件，收到这个事件表示音频流返回结束
                         yield ChatResponse(
@@ -303,12 +330,13 @@ class DifyParser:
                             metadata={
                                 "event": event,
                                 "task_id": data.get("task_id"),
+                                "message_id": data.get("message_id"),
                                 "audio": data.get("audio"),  # 结束事件是没有音频的，所以这里是空字符串
                                 "created_at": data.get("created_at")
                             }
                         )
                     
-                    # 5. 处理 message_replace 事件 - 消息内容替换事件
+                    # 8. 处理 message_replace 事件 - 消息内容替换事件
                     elif event == "message_replace":
                         # 消息内容替换事件
                         # 开启内容审查和审查输出内容时，若命中了审查条件，则会通过此事件替换消息内容为预设回复
@@ -319,11 +347,12 @@ class DifyParser:
                             metadata={
                                 "event": event,
                                 "task_id": data.get("task_id"),
+                                "message_id": data.get("message_id"),
                                 "created_at": data.get("created_at")
                             }
                         )
                     
-                    # 6. 处理 error 事件 - 错误事件
+                    # 9. 处理 error 事件 - 错误事件
                     elif event == "error":
                         # 流式输出过程中出现的异常会以 stream event 形式输出
                         # 收到异常事件后即结束
@@ -334,13 +363,14 @@ class DifyParser:
                             metadata={
                                 "event": event,
                                 "task_id": data.get("task_id"),
+                                "message_id": data.get("message_id"),
                                 "status": data.get("status"),
                                 "code": data.get("code"),
                                 "error_message": data.get("message")
                             }
                         )
                     
-                    # 7. 处理 ping 事件 - 心跳事件
+                    # 10. 处理 ping 事件 - 心跳事件
                     elif event == "ping":
                         # 每 10s 一次的 ping 事件，保持连接存活
                         yield ChatResponse(
@@ -352,7 +382,7 @@ class DifyParser:
                             }
                         )
                     
-                    # 8. 处理 text_chunk 事件 - 工作流文本块事件
+                    # 11. 处理 text_chunk 事件 - 工作流文本块事件
                     elif event == "text_chunk":
                         chunk_data = data.get("data", {})
                         text = chunk_data.get("text", "")
@@ -372,7 +402,7 @@ class DifyParser:
                         # 处理text_chunk事件
                         yield response
                     
-                    # 9. 处理 workflow_finished 事件 - Workflow完成事件
+                    # 12. 处理 workflow_finished 事件 - Workflow完成事件
                     elif event == "workflow_finished":
                         # 工作流完成事件
                         workflow_data = data.get("data", {})
@@ -402,7 +432,7 @@ class DifyParser:
                             }
                         )
                     
-                    # 10. 处理 workflow_started 事件 - Workflow开始执行事件
+                    # 13. 处理 workflow_started 事件 - Workflow开始执行事件
                     elif event == "workflow_started":
                         yield ChatResponse(
                             message="",
@@ -416,7 +446,7 @@ class DifyParser:
                             }
                         )
                     
-                    # 11. 处理 node_started 事件 - 节点开始执行事件
+                    # 14. 处理 node_started 事件 - 节点开始执行事件
                     elif event == "node_started":
                         yield ChatResponse(
                             message="",
@@ -430,7 +460,7 @@ class DifyParser:
                             }
                         )
                     
-                    # 12. 处理 node_finished 事件 - 节点执行结束事件
+                    # 15. 处理 node_finished 事件 - 节点执行结束事件
                     elif event == "node_finished":
                         yield ChatResponse(
                             message="",

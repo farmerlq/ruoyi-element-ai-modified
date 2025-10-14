@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>最小化图表测试</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        .chart-container {
+            width: 100%;
+            height: 400px;
+            margin-bottom: 20px;
+            background-color: #fafafa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .debug-info {
+            background-color: #f0f0f0;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .error {
+            color: #f56c6c;
+            background-color: #fef0f0;
+            padding: 10px;
+            border: 1px solid #fbc4c4;
+            border-radius: 4px;
+        }
+    </style>
+    <!-- 直接从CDN引入ECharts -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>最小化ECharts测试</h1>
+        
+        <!-- 图表容器 -->
+        <div id="chart1" class="chart-container"></div>
+        
+        <!-- 调试信息区域 -->
+        <div class="debug-info" id="debug-info">
+            <div>页面加载中...</div>
+        </div>
+    </div>
+
+    <script>
+        // 记录调试信息的函数
+        function logDebugInfo(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logMessage = `[${timestamp}] ${message}`;
+            console.log(logMessage);
+            
+            const debugElement = document.getElementById('debug-info');
+            const logElement = document.createElement('div');
+            logElement.textContent = logMessage;
+            
+            // 如果是错误信息，添加错误样式
+            if (message.toLowerCase().includes('error')) {
+                logElement.classList.add('error');
+            }
+            
+            debugElement.appendChild(logElement);
+            debugElement.scrollTop = debugElement.scrollHeight;
+        }
+
+        // 等待DOM加载完成
+        document.addEventListener('DOMContentLoaded', function() {
+            logDebugInfo('DOM已加载完成，开始初始化图表');
+            
+            try {
+                // 获取图表容器
+                const chartDom = document.getElementById('chart1');
+                if (!chartDom) {
+                    throw new Error('图表容器未找到');
+                }
+                
+                // 检查容器尺寸
+                const rect = chartDom.getBoundingClientRect();
+                logDebugInfo(`容器尺寸: 宽=${rect.width}, 高=${rect.height}`);
+                
+                if (rect.width === 0 || rect.height === 0) {
+                    throw new Error('图表容器尺寸为0');
+                }
+                
+                // 初始化图表实例
+                logDebugInfo('开始初始化ECharts实例');
+                const myChart = echarts.init(chartDom, null, {
+                    renderer: 'svg' // 使用SVG渲染器
+                });
+                
+                logDebugInfo('图表实例初始化成功');
+                
+                // 定义图表配置
+                const option = {
+                    title: {
+                        text: 'ECharts 柱状图示例',
+                        left: 'center'
+                    },
+                    tooltip: {
+                        trigger: 'axis',
+                        axisPointer: {
+                            type: 'shadow'
+                        }
+                    },
+                    legend: {
+                        data: ['销量'],
+                        bottom: 10
+                    },
+                    grid: {
+                        left: '3%',
+                        right: '4%',
+                        bottom: '15%',
+                        containLabel: true
+                    },
+                    xAxis: {
+                        type: 'category',
+                        data: ['衬衫', '羊毛衫', '雪纺衫', '裤子', '高跟鞋', '袜子'],
+                        axisLabel: {
+                            interval: 0,
+                            rotate: 30
+                        }
+                    },
+                    yAxis: {
+                        type: 'value'
+                    },
+                    series: [
+                        {
+                            name: '销量',
+                            type: 'bar',
+                            data: [5, 20, 36, 10, 10, 20],
+                            itemStyle: {
+                                color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                    {offset: 0, color: '#83bff6'},
+                                    {offset: 0.5, color: '#188df0'},
+                                    {offset: 1, color: '#188df0'}
+                                ])
+                            },
+                            emphasis: {
+                                itemStyle: {
+                                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                                        {offset: 0, color: '#2378f7'},
+                                        {offset: 0.7, color: '#2378f7'},
+                                        {offset: 1, color: '#83bff6'}
+                                    ])
+                                }
+                            },
+                            label: {
+                                show: true,
+                                position: 'top'
+                            }
+                        }
+                    ]
+                };
+                
+                // 设置图表配置
+                logDebugInfo('设置图表配置');
+                myChart.setOption(option);
+                
+                logDebugInfo('图表渲染完成');
+                
+                // 监听窗口大小变化，调整图表大小
+                window.addEventListener('resize', function() {
+                    logDebugInfo('窗口大小变化，调整图表尺寸');
+                    myChart.resize();
+                });
+                
+            } catch (error) {
+                logDebugInfo(`错误: ${error.message}`);
+                console.error('图表渲染失败:', error);
+            }
+        });
+    </script>
+</body>
+</html>

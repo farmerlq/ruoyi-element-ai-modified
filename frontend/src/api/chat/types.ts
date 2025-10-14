@@ -205,4 +205,8 @@ export interface ChatMessageVo {
    * 消息关联的文件
    */
   files?: any[];
+  /**
+   * AI思考过程内容
+   */
+  thought_content?: string;
 }

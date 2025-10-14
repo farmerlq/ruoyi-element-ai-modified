@@ -69,7 +69,8 @@ export const useChatStore = defineStore('chat', () => {
       const isUser = item.role === 'user';
       // 确保 content 存在
       const content = item.content || '';
-      const thinkContent = extractThkContent(content);
+      // 从数据库字段 thought_content 获取思考内容
+      const thoughtContent = (item as any).thought_content || '';
 
       // 从workflow_events中提取统计信息
       const workflowEvents = Array.isArray(item.workflow_events) ? item.workflow_events : [];// 检查是否有工作流完成事件
@@ -95,9 +96,10 @@ export const useChatStore = defineStore('chat', () => {
           : 'https://cube.elemecdn.com/0/88/03b0d39583f48206768a7534e55bcpng.png',
         avatarSize: '32px',
         typing: false,
-        reasoning_content: thinkContent,
+        reasoning_content: thoughtContent, // 使用 thought_content 字段的值
+        thought_content: thoughtContent, // 添加 thought_content 字段
         thinkingStatus: 'end',
-        content: removeThinkTag(content),
+        content: content, // 不再需要移除思考内容
         thinkCollapse: false,
         workflow_events: workflowEvents, // 保持原始数据用于向后兼容
         workflowEvents: convertedWorkflowEvents, // 使用转换后的数据
@@ -115,6 +117,11 @@ export const useChatStore = defineStore('chat', () => {
         // 添加时间戳信息
         timestamp: item.created_at ? formatTimestamp(item.created_at) : '',
       };
+
+      // 根据规范，历史消息的AI思考过程内容应默认展开显示
+      if (!isUser && (processedItem.thought_content || processedItem.reasoning_content)) {
+        processedItem.thinkCollapse = false;
+      }
 
       return processedItem as MessageItem;
     });
@@ -261,24 +268,31 @@ export const useChatStore = defineStore('chat', () => {
 
   // 对思考中的内容回显做处理
   function extractThkContent(content: string) {
-    const regex = /<think>([\s\S]*?)<\/think>/;
-    const matchResult = content.match(regex);
-    // 把这些内容从 content 中移除
-    content = content.replace(regex, '');
-    return matchResult?.[1] ?? '';
+    // 匹配 var ... ``` 结构
+    const regex = /var\s*([\s\S]*?)\s*\`\`\`/g;
+    const matches = [];
+    let match;
+    
+    // 提取所有匹配项
+    while ((match = regex.exec(content)) !== null) {
+      matches.push(match[1].trim());
+    }
+    
+    // 返回所有思考内容，用换行符连接
+    return matches.join('\n\n');
   }
 
   // 提取 think 标签后的内容
   function extractThkContentAfter(content: string) {
-    const regex = /<think>([\s\S]*?)<\/think>/;
-    // 替换为正则表达式匹配后的内容
-    const replacedContent = content.replace(regex, '$1');
-    return replacedContent;
+    // 保留 var ... ``` 结构中的内容
+    const regex = /var\s*([\s\S]*?)\s*\`\`\`/g;
+    return content.replace(regex, '$1');
   }
 
-  // 移除 <think> 标签及其内容
+  // 移除 var 标签及其内容
   function removeThinkTag(content: string) {
-    const regex = /<think>([\s\S]*?)<\/think>/;
+    // 移除整个 var ... ``` 结构
+    const regex = /var\s*[\s\S]*?\s*\`\`\`/g;
     return content.replace(regex, '').trim();
   }
 

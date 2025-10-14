@@ -185,8 +185,18 @@ export const useSessionStore = defineStore('session', () => {
       // 3. 刷新目标页数据
       await requestSessionList(targetPage, true);
     }
-    catch (error) {
+    catch (error: any) {
       // 处理更新会话错误
+      // 如果是404错误，说明会话不存在，可以忽略或者进行特殊处理
+      if (error.response && error.response.status === 404) {
+        console.warn(`会话 ${item.id} 不存在，可能已被删除`);
+        // 刷新会话列表以同步最新的状态
+        await requestSessionList(1, true);
+      } else {
+        // 其他错误仍需要处理
+        console.error('更新会话时出错:', error);
+        throw error;
+      }
     }
   };
 
