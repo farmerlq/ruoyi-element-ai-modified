@@ -279,22 +279,26 @@ export class DifyRenderer {
 
       case 'agent_thought': {
         // 处理思考事件 - 只传递给工作流回调，避免重复显示
-        // 提取工具调用信息
+        // 根据文档，提取正确的字段信息
         const toolInfo = {
           name: data.tool || '',
-          input: data.tool_input ? JSON.stringify(data.tool_input, null, 2) : '',
+          input: data.tool_input || '{}',
           observation: data.observation || ''
         };
+        
+        // 根据文档，优先使用thought字段作为思考内容，如果没有则使用observation字段
+        const thoughtContent = data.thought || data.observation || '';
         
         if (this.onWorkflowEventCallback) {
           this.onWorkflowEventCallback({
             event: 'agent_thought',
             data: data,
-            message: data.thought || data.observation || '',
+            message: thoughtContent,
             toolInfo: toolInfo
           });
         }
-        break;
+        // 根据经验教训，处理完agent_thought事件后必须立即返回，避免后续流程处理
+        return;
       }
 
       case 'message_end': {
@@ -325,17 +329,45 @@ export class DifyRenderer {
       case 'statistics':
         // 处理统计信息事件 - 传递给工作流事件回调
         if (this.onWorkflowEventCallback) {
+          // 构建包含详细统计数据的消息
+          let statisticsMessage = '统计信息已更新';
+          if (data.data) {
+            const statsData = data.data;
+            const tokensInfo = statsData.total_tokens_estimated ? `，预计使用 tokens: ${statsData.total_tokens_estimated}` : '';
+            const costInfo = statsData.estimated_cost ? `，预计费用: ${statsData.estimated_cost}` : '';
+            statisticsMessage = `统计数据更新${tokensInfo}${costInfo}`;
+          }
           this.onWorkflowEventCallback({
             event,
             data,
-            message: '统计信息已更新',
+            message: statisticsMessage,
           });
         }
         break;
 
       default:
         // 其他未知事件 - 根据事件类型决定传递给哪个回调
-        if (event && (event.includes('workflow') || event.includes('node') || event === 'agent_thought')) {
+        if (event && event === 'agent_thought') {
+          // agent_thought事件应该传递给工作流事件回调，但不应该显示在工作流事件区域
+          // 它应该只显示在思考过程区域
+          if (this.onWorkflowEventCallback) {
+            const toolInfo = {
+              name: data.tool || '',
+              input: data.tool_input || '{}',
+              observation: data.observation || ''
+            };
+            
+            const thoughtContent = data.thought || data.observation || '';
+            
+            this.onWorkflowEventCallback({
+              event: 'agent_thought',
+              data: data,
+              message: thoughtContent,
+              toolInfo: toolInfo
+            });
+          }
+        }
+        else if (event && (event.includes('workflow') || event.includes('node'))) {
           if (this.onWorkflowEventCallback) {
             // 对于工作流相关事件，传递完整的data对象，而不仅仅是data.data
             // 这样前端可以访问所有可能的字段
@@ -348,14 +380,17 @@ export class DifyRenderer {
             });
           }
         }
-        else {
-          // 尝试从数据中提取可能的内容
-          const possibleContent = data.text || data.data?.content || data.data?.text || data.answer || '';
+        else if (event && (event.startsWith('message') || event.startsWith('text') || event.startsWith('chunk') || event === 'agent_message')) {
+          // 回复类事件应该传递给内容回调
+          const possibleContent = data.text || data.data?.content || data.data?.text || data.answer || data.content || '';
           if (possibleContent) {
             if (this.onDataCallback) {
               this.onDataCallback(possibleContent, data);
             }
           }
+        }
+        else {
+          // 其他事件不处理
         }
         break;
     }

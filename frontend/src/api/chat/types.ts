@@ -116,7 +116,7 @@ export interface GetChatListParams {
    */
   role?: string;
   /**
-   * 会话id
+   * 会话id (字符串格式)
    */
   sessionId?: string;
   /**
@@ -166,11 +166,11 @@ export interface ChatMessageVo {
    */
   role?: string;
   /**
-   * 会话id
+   * 会话id (字符串格式)
    */
-  sessionId?: number;
+  sessionId?: string;
   /**
-   * 会话ID（字符串格式）
+   * 会话ID（字符串格式，与sessionId保持一致）
    */
   conversation_id?: string;
   /**
@@ -206,7 +206,11 @@ export interface ChatMessageVo {
    */
   files?: any[];
   /**
-   * AI思考过程内容
+   * AI思考类事件列表
    */
-  thought_content?: string;
+  reasoning_events?: any[];
+  /**
+   * 其他事件列表
+   */
+  other_events?: any[];
 }

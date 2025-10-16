@@ -33,6 +33,10 @@ async def root():
 async def health_check():
     return {"status": "healthy"}
 
+@app.get("/api/v1/health")
+async def api_health_check():
+    return {"status": "healthy"}
+
 # FastAPI的CORS中间件已经足够处理CORS请求，不需要额外的处理
 
 # 包含路由

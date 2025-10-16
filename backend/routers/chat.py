@@ -31,7 +31,8 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
     total_sse_length = 0   # 新增：统计完整的SSE数据长度（包括data:前缀）
     total_tokens = 0
     workflow_events = []
-    thought_content = ""   # 收集思考内容
+    reasoning_events = []  # 收集思考类事件
+    other_events = []      # 收集其他事件
     full_message_content = ""  # 收集完整的消息内容
     message_events_received = set()  # 用于跟踪已接收的消息事件ID，避免重复
     
@@ -55,45 +56,13 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
                 if event_type and event_type != "agent_thought" and ("workflow" in event_type or "node" in event_type or event_type in ["message_end", "message_file"]):
                     workflow_events.append(response.metadata)
                 
-                # 收集思考内容（仅针对agent_thought事件）
-                if event_type == "agent_thought":
-                    thought_data = response.metadata
-                    # 获取完整的思考内容（如果有的话）
-                    full_thought_content = thought_data.get("full_thought_content", "")
-                    if full_thought_content and full_thought_content.strip():
-                        thought_content += full_thought_content + "\n"
-                    else:
-                        # 构建思考内容文本
-                        thought_text = thought_data.get("thought", "")
-                        if not thought_text:
-                            thought_text = thought_data.get("observation", "")
-                        
-                        # 添加工具调用信息（如果有的话）
-                        if thought_data.get("tool") and thought_data.get("tool_input"):
-                            try:
-                                tool_input = thought_data.get("tool_input")
-                                if isinstance(tool_input, str):
-                                    tool_input = json.loads(tool_input)
-                                thought_text += f"\n\n[工具调用: {thought_data['tool']}]\n"
-                                thought_text += f"参数: {json.dumps(tool_input, ensure_ascii=False, indent=2)}\n"
-                            except Exception:
-                                # 如果tool_input不是有效的JSON，直接添加
-                                thought_text += f"\n\n[工具调用: {thought_data['tool']}]\n"
-                                thought_text += f"参数: {thought_data.get('tool_input', '')}\n"
-                        
-                        # 添加文件引用信息（如果有的话）
-                        if thought_data.get("message_files") and isinstance(thought_data["message_files"], list):
-                            thought_text += "\n\n[文件引用]:\n"
-                            for i, file in enumerate(thought_data["message_files"], 1):
-                                thought_text += f"{i}. {file}\n"
-                        
-                        # 添加文件ID信息（如果有的话）
-                        if thought_data.get("file_id"):
-                            thought_text += f"\n\n[文件ID]: {thought_data['file_id']}\n"
-                        
-                        # 只有当thought_text有实际内容时才添加到thought_content中
-                        if thought_text and thought_text.strip():
-                            thought_content += thought_text + "\n"
+                # 收集思考类事件（仅针对agent_thought事件）
+                elif event_type == "agent_thought":
+                    reasoning_events.append(response.metadata)
+                
+                # 收集其他事件
+                elif event_type:
+                    other_events.append(response.metadata)
                 
                 event_data = response.metadata.copy()
                 # 对于text_chunk/message/agent_message事件，确保包含content字段
@@ -198,7 +167,7 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
         # 注意：这里我们使用的是前端显示的total_tokens_estimated和cost
         try:
             # 保存统计信息到数据库
-            save_chat_statistics(db, request, total_tokens_estimated, cost, workflow_events, thought_content, full_message_content)
+            save_chat_statistics(db, request, total_tokens_estimated, cost, workflow_events, reasoning_events, other_events, full_message_content)
         except Exception as e:
             logging.error(f"Error saving chat statistics to database: {e}")
         
@@ -221,7 +190,7 @@ async def stream_chat_response(request: ChatRequest, db: Session, current_user: 
         yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
 
-def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimated: int, cost: float, workflow_events: list, thought_content: str, full_message_content: str = ""):
+def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimated: int, cost: float, workflow_events: list, reasoning_events: list, other_events: list, full_message_content: str = ""):
     """保存聊天统计数据到数据库"""
     try:
         # 生成对话ID（如果有会话ID，强制使用传参的会话ID；如果没有会话ID就可以有解析出来的会话ID；如果都没有的话就新建会话ID）
@@ -281,6 +250,36 @@ def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimat
         
         # 只有当不存在相同AI消息时才保存AI回复消息
         if not existing_ai_message:
+            # 处理reasoning_events，合并相同工具调用的不同事件
+            processed_reasoning_events = []
+            if reasoning_events:
+                # 创建一个字典来合并相同工具调用的不同事件
+                tool_calls_dict = {}
+                
+                for event in reasoning_events:
+                    # 检查是否是工具调用事件
+                    if event.get('tool') or event.get('tool_name') or event.get('name') or event.get('toll'):
+                        tool_name = event.get('tool') or event.get('tool_name') or event.get('name') or event.get('toll')
+                        tool_input = event.get('tool_input') or event.get('input') or ''
+                        
+                        # 使用工具名和输入作为唯一键
+                        tool_key = f"{tool_name}_{str(tool_input)}"
+                        
+                        # 如果已经有这个工具调用，合并数据
+                        if tool_key in tool_calls_dict:
+                            # 优先保留observation数据
+                            if event.get('observation') and not tool_calls_dict[tool_key].get('observation'):
+                                tool_calls_dict[tool_key]['observation'] = event['observation']
+                        else:
+                            # 添加新的工具调用
+                            tool_calls_dict[tool_key] = event
+                    else:
+                        # 非工具调用事件直接添加
+                        processed_reasoning_events.append(event)
+                
+                # 将合并后的工具调用添加到处理后的事件列表中
+                processed_reasoning_events.extend(tool_calls_dict.values())
+            
             # 保存AI回复消息
             ai_message = Message(
                 conversation_id=conversation_id,
@@ -289,7 +288,9 @@ def save_chat_statistics(db: Session, request: ChatRequest, total_tokens_estimat
                 agent_id=request.agent_id,
                 role="agent",
                 content=full_message_content,  # 保存完整的消息内容
-                thought_content=thought_content if thought_content and thought_content.strip() else None,  # 保存思考内容
+                # 正确处理JSON格式的thought_content
+                reasoning_events=processed_reasoning_events if processed_reasoning_events else None,
+                other_events=other_events if other_events else None,
                 workflow_events=workflow_events if workflow_events else None,
                 cost=cost,
                 total_tokens=total_tokens_estimated,  # 使用前端显示的估算值

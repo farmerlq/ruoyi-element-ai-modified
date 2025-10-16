@@ -12,7 +12,7 @@ import FilesSelect from '@/components/FilesSelect/index.vue';
 import MessageActions from '@/components/MessageActions/index.vue';
 import EnhancedMarkdown from '@/components/EnhancedMarkdown/index.vue';
 import WorkflowEvents from '@/components/WorkflowEvents/index.vue';
-import ThinkingProcess from '@/components/ThinkingProcess/index.vue';
+import ThinkingContent from '@/components/ThinkingContent/index.vue';
 import { useAgentStore } from '@/stores/modules/agent';
 import { useChatStore } from '@/stores/modules/chat';
 import { useFilesStore } from '@/stores/modules/files';
@@ -64,6 +64,14 @@ interface BubbleListItemProps {
   timestamp?: string;
   noStyle?: boolean;
   files?: FilesCardProps[];
+  toolInfoList?: Array<{
+    name: string;
+    input: string;
+    observation: string;
+  }>;
+  toolInfoVersion?: number;
+  otherEvents?: Array<any>;
+  reasoningEvents?: Array<any>;
   [key: string]: any;
 }
 
@@ -299,124 +307,110 @@ function handleDataChunk(chunk: any) {
         // DifyRenderer传递了包含event、data和message字段的完整对象
         const eventType = workflowEvent.event || 'unknown';
 
-        // 特殊处理agent_thought事件（思考过程）
-        if (eventType === 'agent_thought') {
-          // 更新当前消息的reasoning_content
-          const thoughtContent = workflowEvent.message || '';
-          if (thoughtContent) {
-            const index = bubbleItems.value.length - 1;
-            const updatedItem = {
-              ...lastItem,
-              reasoning_content: (lastItem.reasoning_content || '') + '\n' + thoughtContent,
-              toolInfo: workflowEvent.toolInfo,
-              // 添加一个版本号属性，每次更新内容时递增，确保组件重新渲染
-              renderVersion: (lastItem.renderVersion || 0) + 1,
-            };
-            
-            // 替换整个数组以确保响应式系统检测到变化
-            const newBubbleItems = [...bubbleItems.value];
-            newBubbleItems[index] = updatedItem;
-            bubbleItems.value = newBubbleItems;
-            
-            // 立即滚动到底部，确保用户实时看到内容
-            bubbleListRef.value?.scrollToBottom();
-          }
-          return;
-        }
-
-        // 格式化事件消息
-        const eventMessages: Record<string, string> = {
-          workflow_started: '开始理解你的语义',
-          node_started: '正在调用LLM（大模型）',
-          node_finished: '调用完毕',
-          workflow_finished: '任务完成',
-          message_end: '消息已完成',
-        };
-
-        let message = eventMessages[eventType] || eventType;
-
-        // 如果事件有自定义文本，使用自定义文本
+        // 处理工作流事件
+        let message = '';
+        
+        // 从不同字段中提取消息内容
         if (workflowEvent.message) {
           message = workflowEvent.message;
+        }
+        else if (workflowEvent.text) {
+          message = workflowEvent.text;
+        }
+        else if ((workflowEvent as any).answer) {
+          message = (workflowEvent as any).answer;
+        }
+        else if ((workflowEvent as any).content) {
+          message = (workflowEvent as any).content;
         }
         else if ((workflowEvent as any).text) {
           message = (workflowEvent as any).text;
         }
 
-        // 为node_started事件添加更多信息
-        if (eventType === 'node_started' && workflowEvent.data?.node_type) {
-          message = `正在调用${workflowEvent.data.node_type}（${workflowEvent.data.node_name || workflowEvent.data.node_type}）`;
-        }
-
-        // 为node_finished事件添加更多信息
-        if (eventType === 'node_finished' && workflowEvent.data?.node_name) {
-          message = `${workflowEvent.data.node_name}调用完毕`;
-        }
-
-        // 确保lastItem.workflowEvents数组存在
-        if (!lastItem.workflowEvents) {
-          lastItem.workflowEvents = [];
-        }
-
-        // 创建新的workflowEvents数组以确保响应式更新
-        const newWorkflowEvents = [...lastItem.workflowEvents];
-        newWorkflowEvents.push({
-          event: eventType,
-          type: eventType,
-          message,
-          // 使用完整的workflowEvent对象，而不仅仅是data字段
-          // 这样可以访问合并后的所有数据
-          data: workflowEvent || {},
-          dataCollapsed: true, // 默认折叠事件数据
-          // 添加唯一ID以确保每个事件都是唯一的，有助于Vue的响应式系统识别变化
-          id: Date.now() + Math.random().toString(36).substr(2, 9),
-        });
-
-        // 创建工作流事件项
-
-        // 创建完全新的消息对象以确保响应式更新
-        const updatedItem = {
-          ...lastItem,
-          workflowEvents: newWorkflowEvents,
-          // 添加版本号属性，每次更新内容时递增，确保组件重新渲染
-          eventsVersion: (lastItem.eventsVersion || 0) + 1,
-        };
-
-        // 如果是statistics事件，立即更新totalTokens和totalCost
-        if (eventType === 'statistics' && workflowEvent.data) {
-          if (workflowEvent.data.total_tokens_estimated) {
-            updatedItem.totalTokens = Number.parseInt(workflowEvent.data.total_tokens_estimated) || updatedItem.totalTokens;
-          }
-          if (workflowEvent.data.estimated_cost) {
-            updatedItem.totalCost = Number.parseFloat(workflowEvent.data.estimated_cost) || updatedItem.totalCost;
+        // 为agent_thought事件生成更有意义的标题
+        if (eventType === 'agent_thought') {
+          if (workflowEvent.tool) {
+            message = `调用工具: ${workflowEvent.tool}`;
+          } else {
+            message = 'AI思考过程';
           }
         }
-        // 如果是workflow_finished事件，也更新token信息
-        else if (eventType === 'workflow_finished' && workflowEvent.data && workflowEvent.data.total_tokens) {
-          updatedItem.totalTokens = Number.parseInt(workflowEvent.data.total_tokens) || updatedItem.totalTokens;
+          
+          // 为node_started事件添加更多信息
+          if (eventType === 'node_started' && workflowEvent.data?.node_type) {
+            message = `正在调用${workflowEvent.data.node_type}（${workflowEvent.data.node_name || workflowEvent.data.node_type}）`;
+          }
+
+          // 为node_finished事件添加更多信息
+          if (eventType === 'node_finished' && workflowEvent.data?.node_name) {
+            message = `${workflowEvent.data.node_name}调用完毕`;
+          }
+
+          // 确保lastItem.workflowEvents数组存在
+          if (!lastItem.workflowEvents) {
+            lastItem.workflowEvents = [];
+          }
+
+          // 创建新的workflowEvents数组以确保响应式更新
+          const newWorkflowEvents = [...lastItem.workflowEvents];
+          newWorkflowEvents.push({
+            event: eventType,
+            type: eventType,
+            message,
+            // 使用完整的workflowEvent对象，而不仅仅是data字段
+            // 这样可以访问合并后的所有数据
+            data: workflowEvent || {},
+            dataCollapsed: true, // 默认折叠事件数据
+            // 添加唯一ID以确保每个事件都是唯一的，有助于Vue的响应式系统识别变化
+            id: Date.now() + Math.random().toString(36).substr(2, 9),
+          });
+
+          // 创建工作流事件项
+
+          // 对于agent_thought事件，更新工具调用信息列表
+          let updatedToolInfoList = lastItem.toolInfoList;
+          let toolInfoVersionIncrement = 0;
+          
+          if (eventType === 'agent_thought' && workflowEvent.toolInfo) {
+            // 检查是否已存在相同工具调用（通过工具名称和输入参数判断）
+            const existingToolIndex = (lastItem.toolInfoList || []).findIndex((tool: any) => 
+              tool.name === workflowEvent.toolInfo.name && 
+              JSON.stringify(tool.input) === JSON.stringify(workflowEvent.toolInfo.input)
+            );
+            
+            if (existingToolIndex >= 0) {
+              // 如果已存在相同工具调用，更新其观察结果
+              updatedToolInfoList = [...(lastItem.toolInfoList || [])];
+              updatedToolInfoList[existingToolIndex] = {
+                ...updatedToolInfoList[existingToolIndex],
+                observation: workflowEvent.toolInfo.observation
+              };
+            } else {
+              // 如果不存在相同工具调用，添加新的工具调用
+              updatedToolInfoList = [...(lastItem.toolInfoList || []), workflowEvent.toolInfo];
+            }
+            
+            toolInfoVersionIncrement = 1;
+          }
+
+          // 创建完全新的消息对象以确保响应式更新
+          const updatedItem = {
+            ...lastItem,
+            workflowEvents: newWorkflowEvents,
+            // 添加版本号属性，每次更新内容时递增，确保组件重新渲染
+            eventsVersion: (lastItem.eventsVersion || 0) + 1,
+            // 对于agent_thought事件，更新工具调用信息列表
+            toolInfoList: updatedToolInfoList,
+            // 添加toolInfoVersion确保ThinkingContent组件能检测到变化
+            toolInfoVersion: (lastItem.toolInfoVersion || 0) + toolInfoVersionIncrement
+          };
+
+          // 更新bubbleItems数组
+          const newBubbleItems = [...bubbleItems.value];
+          newBubbleItems[newBubbleItems.length - 1] = updatedItem;
+          bubbleItems.value = newBubbleItems;
         }
-
-        // 替换整个数组以确保响应式更新
-        const newBubbleItems = [...bubbleItems.value];
-        newBubbleItems[newBubbleItems.length - 1] = updatedItem;
-        bubbleItems.value = newBubbleItems;
-
-        // 使用nextTick确保DOM能够及时更新
-        nextTick(() => {
-          // 通知BubbleList组件更新
-        });
-      },
-      () => {
-        // 流式响应完成，由DifyRenderer内部调用
-
-        finalizeMessage();
-      },
-      (error: Error) => {
-        // 处理解析错误
-        ElMessage.error(`消息解析出错：${error.message}`);
-        finalizeMessage();
-      },
-    );
+      );
   }
   catch (error) {
     ElMessage.error('处理消息时出错，请稍后重试');
@@ -1096,10 +1090,13 @@ watch(
           @update:list="handleBubbleListUpdate"
         >
           <template #header="{ item }">
-            <ThinkingProcess
-              v-if="(item as MessageItem).reasoning_content"
+            <ThinkingContent
+              v-if="(item as MessageItem).reasoning_content || (item as MessageItem).toolInfoList"
               :thinking-content="(item as MessageItem).reasoning_content || ''"
-              :tool-info="(item as MessageItem).toolInfo"
+              :tool-info-list="(item as MessageItem).toolInfoList"
+              :tool-info-version="(item as MessageItem).toolInfoVersion"
+              :other-events="(item as MessageItem).otherEvents"
+              :reasoning-events="(item as MessageItem).reasoningEvents"
             />
           </template>
 
@@ -1304,7 +1301,7 @@ watch(
       align-items: center;
       gap: 4px;
     }
-    
+
     .attachment-actions {
       display: flex;
       gap: 8px;
@@ -1612,4 +1609,5 @@ watch(
     line-height: 1.4;
   }
 }
+
 </style>

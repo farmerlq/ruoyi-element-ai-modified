@@ -391,18 +391,17 @@ const processThinkingContentForTools = () => {
         );
 
         if (isAgentThoughtList) {
-        console.log('Processing agent_thought list');
-        // 专门处理agent_thought事件列表
-        const filteredItems = (props.thinkingContent as any[]).filter((item: any) =>
-          (item.tool || (item as any).toll) && (item.tool || (item as any).toll) !== '' && (item.tool || (item as any).toll).trim() !== ''
-        );
+          console.log('Processing agent_thought list');
+          // 专门处理agent_thought事件列表
+          const filteredItems = (props.thinkingContent as any[]).filter((item: any) =>
+            (item.tool || (item as any).toll) && (item.tool || (item as any).toll) !== '' && (item.tool || (item as any).toll).trim() !== ''
+          );
 
-        const extractedToolCalls = filteredItems.map((item: any) => ({
-          name: item.tool || (item as any).toll || '',
-          input: item.tool_input || '',
-          // 不使用默认值替换，保留原始的observation，包括空字符串
-          observation: item.observation
-        }));
+          const extractedToolCalls = filteredItems.map((item: any) => ({
+            name: item.tool || (item as any).toll || '',
+            input: item.tool_input || '',
+            observation: item.observation || ''
+          }));
 
           if (extractedToolCalls.length > 0) {
             toolCalls.value = extractedToolCalls;
@@ -418,8 +417,7 @@ const processThinkingContentForTools = () => {
             const toolCall = {
               name: item.name || item.tool || item.tool_name || (item as any).toll || '',
               input: item.tool_input || item.input || (item.tool_calls && item.tool_calls[0]?.input) || '',
-              // 不使用默认值替换，保留原始的observation，包括空字符串
-              observation: item.observation
+              observation: item.observation || ''
             };
             extractedCalls.push(toolCall);
           }
@@ -437,8 +435,7 @@ const processThinkingContentForTools = () => {
           const extractedCalls = (props.thinkingContent as any).tool_calls.map((call: any) => ({
             name: call.name || call.tool || call.tool_name || '',
             input: call.input || call.tool_input || '',
-            // 不使用默认值替换，保留原始的observation，包括空字符串
-            observation: call.observation
+            observation: call.observation || ''
           }));
           toolCalls.value = extractedCalls.filter((call: any) => call.name && call.name.trim() !== '');
           initializeToolCallCollapsed();
@@ -448,11 +445,10 @@ const processThinkingContentForTools = () => {
         // 单个工具调用对象
         console.log('Processing single tool call object');
         const toolCall = {
-            name: (props.thinkingContent as any).name || (props.thinkingContent as any).tool || (props.thinkingContent as any).tool_name || (props.thinkingContent as any).toll || '',
-            input: (props.thinkingContent as any).input || (props.thinkingContent as any).tool_input || '',
-            // 不使用默认值替换，保留原始的observation，包括空字符串
-            observation: (props.thinkingContent as any).observation
-          };
+          name: (props.thinkingContent as any).name || (props.thinkingContent as any).tool || (props.thinkingContent as any).tool_name || (props.thinkingContent as any).toll || '',
+          input: (props.thinkingContent as any).input || (props.thinkingContent as any).tool_input || '',
+          observation: (props.thinkingContent as any).observation || ''
+        };
 
         if (toolCall.name && toolCall.name.trim() !== '') {
           toolCalls.value = [toolCall];
@@ -470,9 +466,9 @@ const processThinkingContentForTools = () => {
         processThinkingContentForTools();
         return;
       } catch (error) {
-        console.error('Error parsing JSON string in processThinkingContentForTools:', error);
-        // 字符串不是有效的JSON，保持toolCalls不变
-        // 不做任何操作，让数据保持原样
+        console.log('String is not valid JSON:', (error as Error).message);
+        // 字符串不是有效的JSON，清空toolCalls
+        toolCalls.value = [];
       }
     }
 
@@ -498,7 +494,7 @@ watch([() => props.toolInfoList, () => props.toolInfoVersion], ([newToolInfoList
       const toolCall = {
         name: toolInfo.name || toolInfo.tool || (toolInfo as any).toll || '', // 添加对tool和toll字段的支持
         input: toolInfo.input || toolInfo.tool_input || '', // 添加对tool_input字段的支持
-        observation: toolInfo.observation !== undefined ? toolInfo.observation : (toolInfo as any).observation || '' // 确保observation正确传递
+        observation: toolInfo.observation || '' // 确保观察结果存在，即使是空字符串
       };
 
       console.log(`Processed toolCall ${index}:`, toolCall); // 添加日志检查处理后的工具调用
@@ -740,11 +736,6 @@ const getToolCallType = (toolCall: any) => {
 // 格式化工具调用数据为JSON字符串
 const formatToolCallData = (toolCallData: any) => {
   try {
-    // 明确处理空字符串情况，显示为""而不是空
-    if (toolCallData === '') {
-      return '""';
-    }
-
     // 处理所有工具的响应数据的情况（空白工具）
     if (toolCallData && typeof toolCallData === 'object' && toolCallData.all_tools_response) {
       return '所有工具的响应数据';
@@ -819,6 +810,11 @@ const formatToolCallData = (toolCallData: any) => {
         } catch (e) {
           // 如果解析失败，继续处理
         }
+      }
+
+      // 对于空字符串，返回提示
+      if (toolCallData === '') {
+        return '空字符串';
       }
 
       // 对于可能包含换行符的长字符串，确保正确显示

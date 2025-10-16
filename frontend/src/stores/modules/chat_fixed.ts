@@ -1,8 +1,8 @@
 import type { ChatMessageVo } from '@/api/chat/types';
 import { defineStore } from 'pinia';
-import { getChatList } from '@/api/chat';
 import { computed, ref } from 'vue';
 import { useUserStore } from './user';
+import { getChatList } from '@/api/chat';
 
 // 定义消息项类型
 type MessageItem = {
@@ -127,7 +127,7 @@ export const useChatStore = defineStore('chat', () => {
               // 检查是否已存在相同的工具调用，避免重复
               const isDuplicate = toolInfoList.some((toolInfoItem: any) => 
                 toolInfoItem.name === event.toolInfo.name && 
-                JSON.stringify(toolInfoItem.input) === JSON.stringify(toolInfoItem.input)
+                JSON.stringify(toolInfoItem.input) === JSON.stringify(event.toolInfo.input)
               );
               
               if (!isDuplicate && event.toolInfo.name) {
@@ -170,39 +170,25 @@ export const useChatStore = defineStore('chat', () => {
       
       // 如果从workflow_events中没有提取到工具信息，尝试从reasoning_events中提取
       if (toolInfoList.length === 0 && Array.isArray(reasoningEvents)) {
-        // 创建一个映射来存储每个工具的最新信息
-        const toolMap = new Map<string, any>();
-        
         reasoningEvents.forEach((event: any) => {
           if (event.tool || event.tool_name || event.name || (event as any).toll) {
-            const toolName = event.tool || event.tool_name || event.name || (event as any).toll || '';
-            const toolInput = event.tool_input || event.input || '';
-            const toolKey = `${toolName}_${JSON.stringify(toolInput)}`;
+            const toolInfo = {
+              name: event.tool || event.tool_name || event.name || (event as any).toll || '',
+              input: event.tool_input || event.input || '',
+              observation: event.observation || ''
+            };
             
-            // 如果工具已存在，更新其信息（特别是observation）
-            if (toolMap.has(toolKey)) {
-              const existingTool = toolMap.get(toolKey);
-              // 优先使用有observation的版本
-              if (event.observation && !existingTool.observation) {
-                existingTool.observation = event.observation;
-              }
-              // 合并其他可能的字段
-              Object.assign(existingTool, event);
-              toolMap.set(toolKey, existingTool);
-            } else {
-              // 添加新工具
-              const toolInfo = {
-                name: toolName,
-                input: toolInput,
-                observation: event.observation || ''
-              };
-              toolMap.set(toolKey, { ...event, ...toolInfo });
+            // 检查是否已存在相同的工具调用，避免重复
+            const isDuplicate = toolInfoList.some((existingTool: any) => 
+              existingTool.name === toolInfo.name && 
+              JSON.stringify(existingTool.input) === JSON.stringify(toolInfo.input)
+            );
+            
+            if (!isDuplicate && toolInfo.name) {
+              toolInfoList.push(toolInfo);
             }
           }
         });
-        
-        // 将Map转换为数组
-        toolInfoList = Array.from(toolMap.values());
       }
 
       // 将API返回的workflow_events数据转换为前端期望格式

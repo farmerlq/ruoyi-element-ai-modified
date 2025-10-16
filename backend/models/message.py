@@ -18,7 +18,8 @@ class Message(Base):
     agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
     role = Column(Enum("user", "agent"), nullable=False)
     content = Column(Text, nullable=False)
-    thought_content = Column(Text, nullable=True)  # 添加thought_content字段用于存储AI思考过程
+    reasoning_events: Union[Column[Optional[Union[Dict[str, Any], List[Dict[str, Any]], str]]], Optional[Union[Dict[str, Any], List[Dict[str, Any]], str]]] = Column(JSON, nullable=True)  # AI思考过程(JSON格式或字符串)
+    other_events: Union[Column[Optional[Union[Dict[str, Any], List[Dict[str, Any]], str]]], Optional[Union[Dict[str, Any], List[Dict[str, Any]], str]]] = Column(JSON, nullable=True)  # 其他事件
     message_metadata: Union[Column[Optional[Dict[str, Any]]], Optional[Dict[str, Any]]] = Column(JSON)
     cost = Column(Float, default=0.0, comment="消息费用")
     total_tokens = Column(Integer, default=0, comment="总token数")

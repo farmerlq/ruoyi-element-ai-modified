@@ -28,6 +28,7 @@ cp .env.example .env
 **重要配置项说明：**
 - `SECRET_KEY`: 用于JWT认证的密钥，请设置为安全的随机字符串
 - `OPENAI_API_KEY`: OpenAI API密钥，用于AI模型调用
+- `DIFY_API_BASE_URL`: Dify服务的基础URL
 
 ### 2. 构建和启动服务
 

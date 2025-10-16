@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>工具调用解析测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .tool-call {
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            margin: 15px 0;
+            padding: 15px;
+            background-color: #fafafa;
+        }
+        .tool-header {
+            font-weight: bold;
+            color: #555;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        .section {
+            margin: 10px 0;
+        }
+        .section-title {
+            font-weight: bold;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        pre {
+            background-color: #f8f8f8;
+            border: 1px solid #eee;
+            padding: 10px;
+            border-radius: 3px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+        .empty {
+            color: #999;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>工具调用解析测试</h1>
+        <div id="toolCalls"></div>
+    </div>
+
+    <script>
+        // 模拟从数据库获取的数据
+        const testData = [
+            {
+                "tool": "current_time",
+                "tool_input": "{\"current_time\": {}}",
+                "observation": ""
+            },
+            {
+                "tool": "current_time",
+                "tool_input": "{\"current_time\": {}}",
+                "observation": "{\"current_time\": \"2025-10-16 05:41:52\"}"
+            },
+            {
+                "tool": "dataset_1b8eeb90_2ac3_4dde_a280_3c79a70b7f61",
+                "tool_input": "{\"dataset_1b8eeb90_2ac3_4dde_a280_3c79a70b7f61\": {\"query\": \"销售相关表结构\"}}",
+                "observation": ""
+            },
+            {
+                "tool": "dataset_1b8eeb90_2ac3_4dde_a280_3c79a70b7f61",
+                "tool_input": "{\"dataset_1b8eeb90_2ac3_4dde_a280_3c79a70b7f61\": {\"query\": \"销售相关表结构\"}}",
+                "observation": "{\"dataset_1b8eeb90_2ac3_4dde_a280_3c79a70b7f61\": \"**Bill_SaleHeader   销售表**\n| ***\\\\*表名称\\\\****                                             | ***\\\\*Bill_SaleHeader Bill_SaleOrderHeader\\\\****               | ***\\\\*编号\\\\****      | ***\\\\*B_06\\\\**** | ***\\\\*日期\\\\****                                               | ***\\\\*2002/9/11\\\\**** |\n| ------------------------------------------------------------ | ------------------------------------------------------------ | ------------------- | -------------- | ------------------------------------------------------------ | ------------------- |\n| ***\\\\*No\\\\****                                                 | ***\\\\*字段名称\\\\****                                           | ***\\\\*字段类型\\\\****  | ***\\\\*空\\\\****   | ***\\\\*字段描述及备注\\\\****                                     |                     |\n| 0                                                            | SaleNo                                                       | VarChar(20)         |                | *****销售编号                                                |                     |\n| 1                                                            | SaleSeqID                                                    | Int                 |                | 销售小票号码0                                                |                     |\n| 2                                                            | SaleDateTime                                                 | datetime            | **√**          | 销售日期(GetDate())                                          |                     |\n| 3                                                            | SaleDepartID                                                 | VarChar(10)         | **√**          | 销售门店('')                                                 |                     |\n| 4                                                            | SaleType                                                     | Tinyint             |                | 销售类型（0） 0零售 1会员卡 2批发 3退货 4维修                |                     |\n| 5                                                            | ClientNo                                                     | VarChar(20)         | **√**          | 批发客户编号('')                                             |                     |\n| 6                                                            | CardNo                                                       | VarChar(20)         | **√**          | 会员卡号('')                                                 |                     |\n| 7                                                            | RefundmentBillNo                                             | VarChar(20)         | **√**          | 退货单号('')                                                 |                     |\n|                                                              |                                                              |                     |                |                                                              |                     |\n| 9                                                            | S_Number                                                     | Money               |                | 整单数量0                                                    |                     |\n| 10                                                           | S_MustTotal                                                  | Money               |                | 整单应付0 Price*Number                                       |                     |\n| 11                                                           | S_FactTotal                                                  | Money               |                | 整单实付0                                                    |                     |\n| 12                                                           | S_DiscTotal                                                  | Money               |                | 整单折扣合计0(含临时折扣)                                    |                     |\n| 13\n1.7. **业务数据表**\n\n1.6. **财务数据表**\n\"}"
+            }
+        ];
+
+        // 解析工具调用数据的函数（模拟前端逻辑）
+        function parseToolCalls(data) {
+            // 创建一个映射来存储每个工具的最新信息
+            const toolMap = new Map();
+            
+            data.forEach(item => {
+                if (item.tool) {
+                    const toolKey = `${item.tool}_${item.tool_input || ''}`;
+                    
+                    // 如果工具已存在，更新其信息（特别是observation）
+                    if (toolMap.has(toolKey)) {
+                        const existingTool = toolMap.get(toolKey);
+                        // 优先使用有observation的版本
+                        if (item.observation) {
+                            existingTool.observation = item.observation;
+                        }
+                        toolMap.set(toolKey, existingTool);
+                    } else {
+                        // 添加新工具
+                        const toolInfo = {
+                            name: item.tool,
+                            input: item.tool_input || '',
+                            observation: item.observation || ''
+                        };
+                        toolMap.set(toolKey, toolInfo);
+                    }
+                }
+            });
+            
+            // 转换为数组
+            return Array.from(toolMap.values());
+        }
+
+        // 格式化JSON数据
+        function formatJSON(data) {
+            try {
+                if (typeof data === 'string' && (data.trim().startsWith('{') || data.trim().startsWith('['))) {
+                    const parsed = JSON.parse(data);
+                    return JSON.stringify(parsed, null, 2);
+                }
+                return data;
+            } catch (e) {
+                return data;
+            }
+        }
+
+        // 渲染工具调用
+        function renderToolCalls(toolCalls) {
+            const container = document.getElementById('toolCalls');
+            
+            if (toolCalls.length === 0) {
+                container.innerHTML = '<p class="empty">没有工具调用数据</p>';
+                return;
+            }
+            
+            container.innerHTML = toolCalls.map((toolCall, index) => `
+                <div class="tool-call">
+                    <div class="tool-header">工具调用 ${index + 1}: ${toolCall.name}</div>
+                    <div class="section">
+                        <div class="section-title">请求:</div>
+                        <pre>${formatJSON(toolCall.input)}</pre>
+                    </div>
+                    <div class="section">
+                        <div class="section-title">响应:</div>
+                        <pre>${toolCall.observation ? formatJSON(toolCall.observation) : '<span class="empty">无响应数据</span>'}</pre>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 执行测试
+        const parsedToolCalls = parseToolCalls(testData);
+        renderToolCalls(parsedToolCalls);
+        
+        console.log('解析后的工具调用:', parsedToolCalls);
+    </script>
+</body>
+</html>

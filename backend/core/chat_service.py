@@ -105,8 +105,10 @@ class ChatService:
         
         # 用于收集所有流式响应
         full_message = ""
-        thought_content = ""
+        reasoning_events = []  # 保存所有原始的agent_thought事件数据
+        formatted_thought = {}
         workflow_events = []
+        other_events = []  # 保存其他事件
         conversation_id = None
         message_id = None
         
@@ -119,8 +121,11 @@ class ChatService:
                 
                 # 收集思考内容（agent_thought事件）
                 if response.metadata and response.metadata.get("event") == "agent_thought":
+                    # 将每个agent_thought事件添加到列表中，而不是覆盖
+                    reasoning_events.append(response.metadata)
                     thought_data = response.metadata
-                    # 构建思考内容文本
+                    
+                    # 构建格式化的思考内容（用于后续处理）
                     thought_text = thought_data.get("thought", "")
                     
                     # 添加工具调用信息（如果有的话）
@@ -146,13 +151,33 @@ class ChatService:
                     if thought_data.get("file_id"):
                         thought_text += f"\n\n[文件ID]: {thought_data['file_id']}\n"
                     
-                    thought_content += thought_text + "\n"
-                # 收集工作流事件 - 只收集真正的工作流相关事件，排除text_chunk、message和agent_thought事件
+                    # 构建formatted_thought字典（用于后续处理）
+                    formatted_thought = {
+                        "content": thought_text,
+                        "tool_calls": [],
+                        "file_references": []
+                    }
+                    
+                    # 添加工具调用信息到formatted_thought
+                    if thought_data.get("tool"):
+                        formatted_thought["tool_calls"].append({
+                            "name": thought_data.get("tool"),
+                            "input": thought_data.get("tool_input", "")
+                        })
+                    
+                    # 添加文件引用信息到formatted_thought
+                    if thought_data.get("message_files"):
+                        formatted_thought["file_references"] = thought_data.get("message_files")
+                        
+                # 收集工作流事件和其他事件
                 elif response.metadata and "event" in response.metadata:
                     event_type = response.metadata.get("event")
-                    # 只收集工作流相关事件，排除text_chunk、message和agent_thought事件
+                    # 收集工作流相关事件
                     if event_type and event_type != "agent_thought" and ("workflow" in event_type or "node" in event_type or event_type in ["message_end", "message_file"]):
                         workflow_events.append(response.metadata)
+                    # 只收集非回复类的其他事件（避免将agent_message、text_chunk等保存到other_events中）
+                    elif event_type and not event_type.startswith(('message', 'text', 'chunk')) and event_type not in ['agent_message']:
+                        other_events.append(response.metadata)
                 
                 # 保存消息ID（优先保留第一个非None的值）
                 # 会话ID应该始终使用请求中的会话ID，不需要从响应中收集
@@ -163,7 +188,7 @@ class ChatService:
                 yield response
                 
             # 流结束后保存对话和消息到数据库
-            self._save_conversation_and_message_stream(request, full_message, thought_content, workflow_events, agent)
+            self._save_conversation_and_message_stream(request, full_message, reasoning_events, workflow_events, other_events, agent)
         except Exception as e:
             # 记录错误但不中断流式传输
             print(f"流式聊天处理出错: {e}")
@@ -175,7 +200,7 @@ class ChatService:
             except Exception as e:
                 pass
     
-    def _save_conversation_and_message_stream(self, request: ChatRequest, full_message: str, thought_content: str, workflow_events: list, agent):
+    def _save_conversation_and_message_stream(self, request: ChatRequest, full_message: str, reasoning_events: list, workflow_events: list, other_events: list, agent):
         """保存流式对话和消息到数据库"""
         try:
             # 生成对话ID（如果有会话ID，强制使用传参的会话ID；如果没有会话ID就可以有解析出来的会话ID；如果都没有的话就新建会话ID）
@@ -244,6 +269,36 @@ class ChatService:
             if total_tokens > 0:
                 cost = (total_tokens / 1000000) * 12
             
+            # 处理reasoning_events，确保保存完整的工具调用响应数据
+            processed_reasoning_events = []
+            if reasoning_events:
+                # 创建一个字典来合并相同工具调用的不同事件
+                tool_calls_dict = {}
+                
+                for event in reasoning_events:
+                    # 检查是否是工具调用事件
+                    if event.get('tool') or event.get('tool_name') or event.get('name') or event.get('toll'):
+                        tool_name = event.get('tool') or event.get('tool_name') or event.get('name') or event.get('toll')
+                        tool_input = event.get('tool_input') or event.get('input') or ''
+                        
+                        # 使用工具名和输入作为唯一键
+                        tool_key = f"{tool_name}_{str(tool_input)}"
+                        
+                        # 如果已经有这个工具调用，合并数据
+                        if tool_key in tool_calls_dict:
+                            # 优先保留observation数据
+                            if event.get('observation') and not tool_calls_dict[tool_key].get('observation'):
+                                tool_calls_dict[tool_key]['observation'] = event['observation']
+                        else:
+                            # 添加新的工具调用
+                            tool_calls_dict[tool_key] = event
+                    else:
+                        # 非工具调用事件直接添加
+                        processed_reasoning_events.append(event)
+                
+                # 将合并后的工具调用添加到处理后的事件列表中
+                processed_reasoning_events.extend(tool_calls_dict.values())
+            
             ai_message = Message(
                 conversation_id=conversation_id,
                 merchant_id=request.merchant_id,
@@ -251,7 +306,8 @@ class ChatService:
                 agent_id=request.agent_id,
                 role="agent",
                 content=full_message,  # 确保保存完整的流式响应内容
-                thought_content=thought_content,  # 保存思考内容
+                reasoning_events=processed_reasoning_events if processed_reasoning_events else None,  # 保存原始的agent_thought事件数据
+                other_events=other_events if other_events else None,  # 保存其他事件
                 message_metadata=metadata_for_storage,
                 workflow_events=workflow_events if workflow_events else None,
                 cost=cost,
@@ -312,7 +368,8 @@ class ChatService:
             # 保存AI回复消息（总是保存，即使内容为空）
             # 提取workflow_events（如果有的话）
             workflow_events = []
-            thought_content = ""
+            reasoning_events = []
+            other_events = []
             metadata_for_storage = response.metadata
 
             # 处理workflow_events和thought_content
@@ -321,23 +378,32 @@ class ChatService:
                 # 从message_metadata中移除workflow_events数据，避免重复存储
                 metadata_for_storage = None
             elif response.metadata and "event" in response.metadata:
-                # 如果是单个工作流事件，保存到workflow_events字段
+                # 在流式处理中已经正确分类事件，这里只需要确保分类正确
                 event_type = response.metadata.get("event")
-                # 只保存真正的工作流相关事件，排除text_chunk、message和agent_thought事件
-                if event_type and event_type != "agent_thought" and ("workflow" in event_type or "node" in event_type or event_type in ["message_end", "message_file"]):
+                # agent_thought事件应该存储在reasoning_events中
+                if event_type == "agent_thought":
+                    reasoning_events = [response.metadata]
+                    metadata_for_storage = None
+                # 工作流事件应该存储在workflow_events中
+                elif event_type and event_type != "agent_thought" and not event_type.startswith(('message', 'text', 'chunk')) and ("workflow" in event_type or "node" in event_type or event_type in ["message_end", "message_file", "statistics"]):
                     workflow_events = [response.metadata]
-                    # 从message_metadata中移除工作流事件数据，避免重复存储
                     metadata_for_storage = None
-                elif event_type == "agent_thought":
-                    thought_content = response.metadata.get("thought", "")
-                    # 不将agent_thought事件添加到workflow_events中
+                # 不应该将回复类事件存储在other_events中
+                elif event_type and not event_type.startswith(('message', 'text', 'chunk')) and event_type not in ['agent_message']:
+                    other_events = [response.metadata]
                     metadata_for_storage = None
-            elif response.metadata:
-                # 处理没有"event"字段但有metadata的情况
-                # 检查是否包含thought_content字段
-                if "thought_content" in response.metadata:
-                    thought_content = response.metadata.get("thought_content", "")
-                    metadata_for_storage = None
+
+                elif response.metadata:
+                    # 处理没有"event"字段但有metadata的情况
+                    # 检查是否包含thought_content字段
+                    if "thought_content" in response.metadata:
+                        # 将字符串转换为字典格式
+                        reasoning_events.append({"content": response.metadata.get("thought_content", "")})
+                        metadata_for_storage = None
+                    elif "event" in response.metadata and response.metadata["event"] == "agent_thought":
+                        # 确保agent_thought事件被正确处理
+                        reasoning_events.append(response.metadata)
+                        metadata_for_storage = None
         
             # 计算token和费用
             # 优先使用response.total_tokens的值，如果不存在则使用total_tokens_estimated
@@ -366,6 +432,13 @@ class ChatService:
             if total_tokens > 0:
                 cost = (total_tokens / 1000000) * 12
         
+            # 处理reasoning_events，确保保存完整的工具调用响应数据
+            processed_reasoning_events = []
+            if reasoning_events:
+                for event in reasoning_events:
+                    # 确保每个agent_thought事件都保存完整的数据，包括observation
+                    processed_reasoning_events.append(event)
+        
             ai_message = Message(
                 conversation_id=conversation_id,
                 merchant_id=request.merchant_id,
@@ -373,7 +446,8 @@ class ChatService:
                 agent_id=request.agent_id,
                 role="agent",
                 content=response.message or "",  # 确保content不为None
-                thought_content=thought_content,  # 保存思考内容
+                reasoning_events=processed_reasoning_events if processed_reasoning_events else None,  # 保存思考内容
+                other_events=other_events if other_events else None,  # 保存其他事件
                 message_metadata=metadata_for_storage,
                 workflow_events=workflow_events if workflow_events else None,
                 cost=cost,
